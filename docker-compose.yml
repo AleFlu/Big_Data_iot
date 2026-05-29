@@ -1,0 +1,232 @@
+networks:
+  iot_net:
+    driver: bridge
+
+volumes:
+  kafka_data:
+  es_data:
+  mongo_data:
+  grafana_data:
+  spark_checkpoints:
+
+services:
+
+  # ── KAFKA (KRaft, no ZooKeeper) ─────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    platform: linux/arm64
+    container_name: kafka
+    hostname: kafka
+    networks: [iot_net]
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: ${CLUSTER_ID}
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://host.docker.internal:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: "-Xmx384m -Xms256m"
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: kafka
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── KAFKA TOPIC INIT (ephemero) ─────────────────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    platform: linux/arm64
+    container_name: kafka-init
+    networks: [iot_net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["bash", "-c", "/usr/bin/kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic iot.sensor.data --partitions 4 --replication-factor 1 --config retention.ms=86400000 && echo 'Topic iot.sensor.data created with 4 partitions'"]
+    restart: "no"
+
+  # ── MONGODB 7.0 ─────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    platform: linux/arm64
+    container_name: mongodb
+    hostname: mongodb
+    networks: [iot_net]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo_init:/docker-entrypoint-initdb.d:ro
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE}
+    command: mongod --wiredTigerCacheSizeGB 0.25
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ── ELASTICSEARCH 7.17.28 ───────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.28
+    platform: linux/arm64
+    container_name: elasticsearch
+    hostname: elasticsearch
+    networks: [iot_net]
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms${ES_HEAP_SIZE} -Xmx${ES_HEAP_SIZE}"
+      xpack.security.enabled: "false"
+      xpack.ml.enabled: "false"
+      indices.memory.index_buffer_size: "10%"
+      bootstrap.memory_lock: "false"
+    mem_limit: 1024m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  # ── GRAFANA 10.x ────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    platform: linux/arm64
+    container_name: grafana
+    hostname: grafana
+    networks: [iot_net]
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/iot_dashboard.json
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health | grep -q 'ok'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── CSV PRODUCER ────────────────────────────────────────────────────────────
+  csv-producer:
+    build:
+      context: ./csv_producer
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: csv-producer
+    networks: [iot_net]
+    volumes:
+      - ./acquisizioni:/data/acquisizioni:ro
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: iot.sensor.data
+      PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
+      LOOP_FOREVER: "true"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 256m
+
+  # ── SPARK STREAMING JOB ─────────────────────────────────────────────────────
+  spark-job:
+    build:
+      context: ./spark_job
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: spark-job
+    networks: [iot_net]
+    user: "root"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: iot.sensor.data
+      MONGO_URI: mongodb://mongodb:27017/sensor_data
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
+      ES_INDEX: sensors_live_index
+      SPARK_DRIVER_MEMORY: 512m
+      SPARK_EXECUTOR_MEMORY: 512m
+    volumes:
+      - spark_checkpoints:/spark/checkpoints
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    mem_limit: 2048m
+    restart: on-failure:3
+
+  # ── MONGO EXPRESS ───────────────────────────────────────────────────────────
+  mongo-express:
+    image: mongo-express:latest
+    platform: linux/arm64
+    container_name: mongo-express
+    hostname: mongo-express
+    networks: [iot_net]
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: unless-stopped
+
+  # ── KAFKA UI ────────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    platform: linux/arm64
+    container_name: kafka-ui
+    hostname: kafka-ui
+    networks: [iot_net]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: iot-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+    depends_on:
+      kafka:
+        condition: service_healthy
+    mem_limit: 256m
+    restart: unless-stopped

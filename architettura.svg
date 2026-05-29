@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" font-family="'Segoe UI', Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f1117"/>
+      <stop offset="100%" style="stop-color:#1a1d2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#64748b"/>
+    </marker>
+    <marker id="arrG" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#4ade80"/>
+    </marker>
+    <marker id="arrP" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#c084fc"/>
+    </marker>
+    <marker id="arrO" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#fb923c"/>
+    </marker>
+    <marker id="arrB" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#38bdf8"/>
+    </marker>
+    <filter id="sh">
+      <feDropShadow dx="1" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- BG -->
+  <rect width="1000" height="480" fill="url(#bg)" rx="14"/>
+
+  <!-- Title -->
+  <text x="500" y="32" text-anchor="middle" font-size="16" font-weight="700" fill="#e2e8f0" letter-spacing="1">IoT Big Data Streaming — Architettura</text>
+  <line x1="60" y1="42" x2="940" y2="42" stroke="#334155" stroke-width="1"/>
+
+  <!-- ── CSV PRODUCER ── -->
+  <g filter="url(#sh)">
+    <rect x="28" y="58" width="148" height="188" rx="10" fill="#1b4332" stroke="#4ade80" stroke-width="1.5"/>
+  </g>
+  <text x="102" y="77" text-anchor="middle" font-size="11" font-weight="700" fill="#4ade80">CSV Producer</text>
+  <line x1="40" y1="83" x2="164" y2="83" stroke="#4ade80" stroke-width="0.6" opacity="0.5"/>
+  <!-- nodi -->
+  <rect x="40" y="90" width="124" height="30" rx="5" fill="#052e16" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="102" y="104" text-anchor="middle" font-size="9" fill="#86efac">nodo_1  1733 righe  Fire</text>
+  <text x="102" y="116" text-anchor="middle" font-size="8" fill="#6ee7b7">~44% normal · ~56% fire=1</text>
+
+  <rect x="40" y="125" width="124" height="30" rx="5" fill="#052e16" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="102" y="139" text-anchor="middle" font-size="9" fill="#86efac">nodo_2  1732 righe  Fire</text>
+  <text x="102" y="151" text-anchor="middle" font-size="8" fill="#6ee7b7">100% fire=1</text>
+
+  <rect x="40" y="160" width="124" height="30" rx="5" fill="#052e16" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="102" y="174" text-anchor="middle" font-size="9" fill="#86efac">nodo_3  1669 righe  Fire</text>
+  <text x="102" y="186" text-anchor="middle" font-size="8" fill="#6ee7b7">fire=0/1/2</text>
+
+  <rect x="40" y="195" width="124" height="30" rx="5" fill="#052e16" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="102" y="209" text-anchor="middle" font-size="9" fill="#86efac">nodo_4  1611 righe</text>
+  <text x="102" y="221" text-anchor="middle" font-size="8" fill="#6ee7b7">solo ambientale</text>
+
+  <text x="102" y="242" text-anchor="middle" font-size="8" fill="#94a3b8">round-robin · 500 ms · JSON</text>
+
+  <!-- ── KAFKA ── -->
+  <g filter="url(#sh)">
+    <rect x="228" y="58" width="148" height="188" rx="10" fill="#3b0764" stroke="#c084fc" stroke-width="1.5"/>
+  </g>
+  <text x="302" y="77" text-anchor="middle" font-size="11" font-weight="700" fill="#c084fc">Kafka KRaft</text>
+  <text x="302" y="91" text-anchor="middle" font-size="8" fill="#d8b4fe">Confluent CP 7.6.1</text>
+  <line x1="240" y1="97" x2="364" y2="97" stroke="#c084fc" stroke-width="0.6" opacity="0.5"/>
+  <text x="302" y="112" text-anchor="middle" font-size="9" fill="#e9d5ff">iot.sensor.data</text>
+  <rect x="240" y="118" width="124" height="20" rx="4" fill="#1e003d" stroke="#9333ea" stroke-width="0.7"/>
+  <text x="302" y="131" text-anchor="middle" font-size="8" fill="#d8b4fe">Part 0 → nodo_1</text>
+  <rect x="240" y="142" width="124" height="20" rx="4" fill="#1e003d" stroke="#9333ea" stroke-width="0.7"/>
+  <text x="302" y="155" text-anchor="middle" font-size="8" fill="#d8b4fe">Part 1 → nodo_2</text>
+  <rect x="240" y="166" width="124" height="20" rx="4" fill="#1e003d" stroke="#9333ea" stroke-width="0.7"/>
+  <text x="302" y="179" text-anchor="middle" font-size="8" fill="#d8b4fe">Part 2 → nodo_3</text>
+  <rect x="240" y="190" width="124" height="20" rx="4" fill="#1e003d" stroke="#9333ea" stroke-width="0.7"/>
+  <text x="302" y="203" text-anchor="middle" font-size="8" fill="#d8b4fe">Part 3 → nodo_4</text>
+  <text x="302" y="232" text-anchor="middle" font-size="8" fill="#94a3b8">key=node_id · acks=all</text>
+  <text x="302" y="244" text-anchor="middle" font-size="8" fill="#94a3b8">retention 24h</text>
+
+  <!-- ── SPARK ── -->
+  <g filter="url(#sh)">
+    <rect x="428" y="58" width="160" height="188" rx="10" fill="#431407" stroke="#fb923c" stroke-width="1.5"/>
+  </g>
+  <text x="508" y="77" text-anchor="middle" font-size="11" font-weight="700" fill="#fb923c">Spark Streaming</text>
+  <text x="508" y="91" text-anchor="middle" font-size="8" fill="#fed7aa">3.5.3 · local[4] · 5s batch</text>
+  <line x1="440" y1="97" x2="576" y2="97" stroke="#fb923c" stroke-width="0.6" opacity="0.5"/>
+  <rect x="440" y="104" width="136" height="18" rx="4" fill="#1c0700" stroke="#ea580c" stroke-width="0.7"/>
+  <text x="508" y="116" text-anchor="middle" font-size="8" fill="#fed7aa">1. Parse JSON (from_json)</text>
+  <rect x="440" y="126" width="136" height="18" rx="4" fill="#1c0700" stroke="#ea580c" stroke-width="0.7"/>
+  <text x="508" y="138" text-anchor="middle" font-size="8" fill="#fed7aa">2. Filtro outlier CO/Gas</text>
+  <rect x="440" y="148" width="136" height="18" rx="4" fill="#1c0700" stroke="#ea580c" stroke-width="0.7"/>
+  <text x="508" y="160" text-anchor="middle" font-size="8" fill="#fed7aa">3. Z-score Welford online</text>
+  <rect x="440" y="170" width="136" height="18" rx="4" fill="#1c0700" stroke="#ea580c" stroke-width="0.7"/>
+  <text x="508" y="182" text-anchor="middle" font-size="8" fill="#fed7aa">4. Soglie assolute</text>
+  <rect x="440" y="192" width="136" height="18" rx="4" fill="#1c0700" stroke="#ea580c" stroke-width="0.7"/>
+  <text x="508" y="204" text-anchor="middle" font-size="8" fill="#fed7aa">5. Flag is_fire / is_anomaly</text>
+  <text x="508" y="234" text-anchor="middle" font-size="8" fill="#94a3b8">foreachBatch · checkpoint vol.</text>
+  <text x="508" y="246" text-anchor="middle" font-size="8" fill="#94a3b8">maxOffsets 200/batch</text>
+
+  <!-- ── MONGODB ── -->
+  <g filter="url(#sh)">
+    <rect x="28" y="290" width="260" height="172" rx="10" fill="#052e16" stroke="#4ade80" stroke-width="1.5"/>
+  </g>
+  <text x="158" y="309" text-anchor="middle" font-size="11" font-weight="700" fill="#4ade80">MongoDB 7.0</text>
+  <line x1="40" y1="315" x2="276" y2="315" stroke="#4ade80" stroke-width="0.6" opacity="0.5"/>
+  <rect x="40" y="322" width="236" height="28" rx="5" fill="#0a3d1e" stroke="#16a34a" stroke-width="0.8"/>
+  <text x="158" y="334" text-anchor="middle" font-size="8" font-weight="700" fill="#86efac">raw_readings</text>
+  <text x="158" y="345" text-anchor="middle" font-size="7.5" fill="#6ee7b7">Archivio completo · nomi originali CSV</text>
+  <rect x="40" y="354" width="236" height="28" rx="5" fill="#0a3d1e" stroke="#16a34a" stroke-width="0.8"/>
+  <text x="158" y="366" text-anchor="middle" font-size="8" font-weight="700" fill="#86efac">node_stats</text>
+  <text x="158" y="377" text-anchor="middle" font-size="7.5" fill="#6ee7b7">Stato Welford {count, mean, m2} per nodo</text>
+  <rect x="40" y="386" width="112" height="28" rx="5" fill="#0a3d1e" stroke="#16a34a" stroke-width="0.8"/>
+  <text x="96" y="398" text-anchor="middle" font-size="8" font-weight="700" fill="#86efac">fire_events</text>
+  <text x="96" y="409" text-anchor="middle" font-size="7.5" fill="#6ee7b7">Fire ≥ 1 · idempotente</text>
+  <rect x="164" y="386" width="112" height="28" rx="5" fill="#0a3d1e" stroke="#16a34a" stroke-width="0.8"/>
+  <text x="220" y="398" text-anchor="middle" font-size="8" font-weight="700" fill="#86efac">agg_per_nodo</text>
+  <text x="220" y="409" text-anchor="middle" font-size="7.5" fill="#6ee7b7">$inc $min $max $set</text>
+  <text x="158" y="450" text-anchor="middle" font-size="7.5" fill="#94a3b8">storico · statistiche cumulative · upsert atomico</text>
+
+  <!-- ── ELASTICSEARCH ── -->
+  <g filter="url(#sh)">
+    <rect x="310" y="290" width="260" height="172" rx="10" fill="#001f2e" stroke="#38bdf8" stroke-width="1.5"/>
+  </g>
+  <text x="440" y="309" text-anchor="middle" font-size="11" font-weight="700" fill="#38bdf8">Elasticsearch 7.17</text>
+  <line x1="322" y1="315" x2="558" y2="315" stroke="#38bdf8" stroke-width="0.6" opacity="0.5"/>
+  <rect x="322" y="322" width="236" height="62" rx="5" fill="#00121e" stroke="#0284c7" stroke-width="0.8"/>
+  <text x="440" y="337" text-anchor="middle" font-size="8" font-weight="700" fill="#7dd3fc">sensors_live_index</text>
+  <text x="440" y="350" text-anchor="middle" font-size="7.5" fill="#bae6fd">1 doc per msg · ingest_ts (date)</text>
+  <text x="440" y="362" text-anchor="middle" font-size="7.5" fill="#bae6fd">snake_case · zscore_* · is_anomaly · is_fire</text>
+  <text x="440" y="374" text-anchor="middle" font-size="7.5" fill="#bae6fd">fire_state_label · anomaly_sensors</text>
+  <rect x="322" y="390" width="236" height="48" rx="5" fill="#00121e" stroke="#0284c7" stroke-width="0.8"/>
+  <text x="440" y="405" text-anchor="middle" font-size="8" font-weight="700" fill="#7dd3fc">node_status_index</text>
+  <text x="440" y="418" text-anchor="middle" font-size="7.5" fill="#bae6fd">4 doc fissi · _id=node_id · upsert ogni batch</text>
+  <text x="440" y="430" text-anchor="middle" font-size="7.5" fill="#bae6fd">ultima lettura · z-score correnti</text>
+  <text x="440" y="450" text-anchor="middle" font-size="7.5" fill="#94a3b8">mapping esplicito · refresh 1s · replicas 0</text>
+
+  <!-- ── GRAFANA ── -->
+  <g filter="url(#sh)">
+    <rect x="592" y="290" width="220" height="172" rx="10" fill="#3a1100" stroke="#f97316" stroke-width="1.5"/>
+  </g>
+  <text x="702" y="309" text-anchor="middle" font-size="11" font-weight="700" fill="#f97316">Grafana 10.4</text>
+  <line x1="604" y1="315" x2="800" y2="315" stroke="#f97316" stroke-width="0.6" opacity="0.5"/>
+  <rect x="604" y="322" width="196" height="58" rx="5" fill="#1a0800" stroke="#c2410c" stroke-width="0.8"/>
+  <text x="702" y="337" text-anchor="middle" font-size="8" font-weight="700" fill="#fdba74">Home Dashboard</text>
+  <text x="702" y="350" text-anchor="middle" font-size="7.5" fill="#fed7aa">4 pannelli stato nodo (FIRE/OK)</text>
+  <text x="702" y="362" text-anchor="middle" font-size="7.5" fill="#fed7aa">Temp · CO · Smoke · Gas · Anomalie</text>
+  <text x="702" y="374" text-anchor="middle" font-size="7.5" fill="#fed7aa">Threshold: 30/35°C · 50/200 ppm</text>
+  <rect x="604" y="386" width="196" height="48" rx="5" fill="#1a0800" stroke="#c2410c" stroke-width="0.8"/>
+  <text x="702" y="401" text-anchor="middle" font-size="8" font-weight="700" fill="#fdba74">Node Detail ($node)</text>
+  <text x="702" y="414" text-anchor="middle" font-size="7.5" fill="#fed7aa">Tutti i parametri · 4 z-score panels</text>
+  <text x="702" y="426" text-anchor="middle" font-size="7.5" fill="#fed7aa">Tabella 50 record · NORMAL/FIRE/SPECIAL</text>
+  <text x="702" y="450" text-anchor="middle" font-size="7.5" fill="#94a3b8">auto-refresh 5s · provisioning YAML</text>
+
+  <!-- ── ANOMALY BOX ── -->
+  <g filter="url(#sh)">
+    <rect x="834" y="58" width="148" height="188" rx="10" fill="#1a1030" stroke="#7c3aed" stroke-width="1.5"/>
+  </g>
+  <text x="908" y="77" text-anchor="middle" font-size="10" font-weight="700" fill="#a78bfa">Anomaly Detection</text>
+  <line x1="846" y1="83" x2="970" y2="83" stroke="#7c3aed" stroke-width="0.6" opacity="0.5"/>
+  <text x="846" y="98" font-size="8" font-weight="700" fill="#c4b5fd">  Welford Z-score</text>
+  <text x="846" y="111" font-size="7.5" fill="#ddd6fe">  |z| &gt; 2σ per nodo</text>
+  <text x="846" y="124" font-size="7.5" fill="#ddd6fe">  Temp · CO · Smoke · Gas</text>
+  <line x1="846" y1="132" x2="970" y2="132" stroke="#7c3aed" stroke-width="0.4" stroke-dasharray="3,3"/>
+  <text x="846" y="146" font-size="8" font-weight="700" fill="#c4b5fd">  Soglie assolute</text>
+  <text x="846" y="159" font-size="7.5" fill="#ddd6fe">  CO &gt; 50 ppm</text>
+  <text x="846" y="172" font-size="7.5" fill="#ddd6fe">  Smoke &gt; 0.08 ppm</text>
+  <text x="846" y="185" font-size="7.5" fill="#ddd6fe">  Temp &gt; 35°C</text>
+  <line x1="846" y1="193" x2="970" y2="193" stroke="#7c3aed" stroke-width="0.4" stroke-dasharray="3,3"/>
+  <text x="846" y="207" font-size="8" font-weight="700" fill="#c4b5fd">  Fire Sensor MQ-2</text>
+  <text x="846" y="220" font-size="7.5" fill="#ddd6fe">  0=OK · 1=FIRE · 2=SPECIAL</text>
+  <text x="846" y="233" font-size="7.5" fill="#ddd6fe">  null=N/A (nodo_4)</text>
+
+  <!-- Docker footer -->
+  <rect x="28" y="470" width="944" height="5" rx="2" fill="#1e293b" stroke="#475569" stroke-width="0.8"/>
+
+  <!-- ── ARROWS ── -->
+
+  <!-- Producer → Kafka (4 lines) -->
+  <line x1="176" y1="105" x2="226" y2="128" stroke="#4ade80" stroke-width="1.3" marker-end="url(#arrG)" opacity="0.8"/>
+  <line x1="176" y1="140" x2="226" y2="152" stroke="#4ade80" stroke-width="1.3" marker-end="url(#arrG)" opacity="0.8"/>
+  <line x1="176" y1="175" x2="226" y2="176" stroke="#4ade80" stroke-width="1.3" marker-end="url(#arrG)" opacity="0.8"/>
+  <line x1="176" y1="210" x2="226" y2="200" stroke="#4ade80" stroke-width="1.3" marker-end="url(#arrG)" opacity="0.8"/>
+  <text x="201" y="158" text-anchor="middle" font-size="7.5" fill="#4ade80">JSON</text>
+
+  <!-- Kafka → Spark -->
+  <line x1="376" y1="152" x2="426" y2="152" stroke="#c084fc" stroke-width="1.8" marker-end="url(#arrP)"/>
+  <text x="401" y="145" text-anchor="middle" font-size="7.5" fill="#c084fc">consume</text>
+  <text x="401" y="165" text-anchor="middle" font-size="7.5" fill="#c084fc">5s batch</text>
+
+  <!-- Spark → MongoDB -->
+  <path d="M 508 246 Q 508 268 340 268 Q 200 268 158 288" fill="none" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrG)" stroke-dasharray="5,3"/>
+
+  <!-- Spark → Elasticsearch -->
+  <path d="M 508 246 Q 508 268 440 288" fill="none" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="492" y="278" text-anchor="middle" font-size="7.5" fill="#38bdf8">upsert</text>
+
+  <!-- ES → Grafana -->
+  <line x1="570" y1="376" x2="590" y2="376" stroke="#38bdf8" stroke-width="1.8" marker-end="url(#arrB)"/>
+  <text x="580" y="368" text-anchor="middle" font-size="7.5" fill="#38bdf8">KQL</text>
+
+  <!-- Spark → Anomaly (dashed reference) -->
+  <line x1="588" y1="152" x2="832" y2="152" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="710" y="145" text-anchor="middle" font-size="7.5" fill="#a78bfa">logica</text>
+
+</svg>

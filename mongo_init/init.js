@@ -1,0 +1,43 @@
+// Eseguito automaticamente da MongoDB al primo avvio del container
+db = db.getSiblingDB("sensor_data");
+
+// Helper: createCollection idempotente (MongoDB 7.0 lancia errore se la collezione esiste già)
+function createIfMissing(name) {
+    try {
+        db.createCollection(name);
+    } catch (e) {
+        if (e.codeName !== "NamespaceExists") throw e;
+    }
+}
+
+// ── raw_readings: tutti i record inviati dal producer (pre-filtro) ────────────
+createIfMissing("raw_readings");
+db.raw_readings.createIndex({ node_id: 1 });
+db.raw_readings.createIndex({ ingest_ts: 1 });
+db.raw_readings.createIndex({ node_id: 1, ingest_ts: 1 });
+// M3: indice unico per deduplicazione — il connettore Spark usa idFieldList=node_id,reading_index
+db.raw_readings.createIndex({ node_id: 1, reading_index: 1 }, { unique: true });
+
+// ── node_stats: statistiche Welford online per z-score (upsert per nodo) ──────
+createIfMissing("node_stats");
+db.node_stats.createIndex({ node_id: 1 }, { unique: true });
+
+// ── agg_per_nodo: aggregati rolling per nodo (corrisponde al notebook) ─────────
+createIfMissing("agg_per_nodo");
+db.agg_per_nodo.createIndex({ node_id: 1 }, { unique: true });
+
+// ── node_latest_status: stato corrente per nodo (1 doc per nodo, upsert) ──────
+createIfMissing("node_latest_status");
+db.node_latest_status.createIndex({ node_id: 1 }, { unique: true });
+
+// ── fire_events: eventi incendio (Fire >= 1), TTL 30 giorni ───────────────────
+createIfMissing("fire_events");
+db.fire_events.createIndex({ node_id: 1, ingest_ts: -1 });
+db.fire_events.createIndex({ ingest_ts: 1 }, { expireAfterSeconds: 2592000 });
+
+// ── collezioni di output aggiuntive (compatibilità con il notebook) ────────────
+createIfMissing("agg_fire_comparison");
+createIfMissing("anomalies");
+createIfMissing("clean_readings");
+
+print("MongoDB: collezioni e indici inizializzati su sensor_data.");
