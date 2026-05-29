@@ -3,7 +3,6 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from itertools import zip_longest
 
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
@@ -12,20 +11,12 @@ BOOTSTRAP = os.environ["KAFKA_BOOTSTRAP_SERVERS"]
 TOPIC     = os.environ["KAFKA_TOPIC"]
 DELAY_MS  = int(os.environ.get("PRODUCER_DELAY_MS", "500"))
 LOOP      = os.environ.get("LOOP_FOREVER", "true").lower() == "true"
+NODE_ID   = os.environ["NODE_ID"]    # "nodo_1" | "nodo_2" | "nodo_3" | "nodo_4"
+CSV_PATH  = os.environ["CSV_PATH"]   # path al CSV di questo nodo
+# Partizione esplicita: evita collisioni di hash murmur2 (nodo_1 e nodo_4 collidono sulla stessa partizione)
+_part_env  = os.environ.get("KAFKA_PARTITION", "")
+PARTITION  = int(_part_env) if _part_env.isdigit() else None
 
-# Ogni nodo usa il proprio CSV reale:
-#   nodo_1 → misto 44% normal / 56% fire=1  (zona di transizione)
-#   nodo_2 → 100% fire=1 (prima acquisizione con accendino)
-#   nodo_3 → 25% normal / 25% fire=1 / 50% fire=2 (zona ad alto rischio)
-#   nodo_4 → no Fire (sensore ambientale puro, sempre verde)
-CSV_MAP = {
-    "nodo_1": "/data/acquisizioni/Nodo_1/prima_acquisizione/nodo1_csv.csv",
-    "nodo_2": "/data/acquisizioni/Nodo_2/prima_acquisizione/nodo2.csv",
-    "nodo_3": "/data/acquisizioni/Nodo_3/prima_acq/nodo3_csv.csv",
-    "nodo_4": "/data/acquisizioni/Nodo_4/nodo4_csv.csv",
-}
-
-# Campi numerici da castare a float (None se stringa vuota o non numerica)
 NUMERIC_FIELDS = [
     "Temperature (C)", "Humidity (%)", "Pressure (hPA)", "Gas (Ohm)",
     "Visible Light", "IR", "UV index", "CO", "NO2", "Smoke (ppm)",
@@ -52,7 +43,6 @@ def get_producer(retries: int = 20, wait: int = 5) -> KafkaProducer:
 
 
 def load_csv_rows(node_id: str, path: str) -> list[dict]:
-    """Legge il CSV e restituisce lista di dict normalizzati."""
     rows = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -68,7 +58,6 @@ def load_csv_rows(node_id: str, path: str) -> list[dict]:
                     except ValueError:
                         record[field] = None
 
-            # Fire: presente in nodo_1/3, None per nodo_2 (usa nodo3_normal) e nodo_4
             fire_raw = row.get("Fire", "").strip()
             try:
                 record["Fire"] = int(fire_raw) if fire_raw != "" else None
@@ -89,48 +78,39 @@ def _on_send_error(exc):
 
 def main():
     producer = get_producer()
-    print(f"Connesso a Kafka ({BOOTSTRAP}), topic: {TOPIC}")
+    print(f"Connesso a Kafka ({BOOTSTRAP}), topic: {TOPIC}, nodo: {NODE_ID}")
 
-    # Carica tutti i CSV in memoria — LOOP_FOREVER=true per simulazione continua
-    all_rows = {node_id: load_csv_rows(node_id, path) for node_id, path in CSV_MAP.items()}
-    total_per_pass = sum(len(v) for v in all_rows.values())
-    print(f"Caricati {total_per_pass} record totali (4 nodi). Loop continuo: {LOOP}")
+    rows = load_csv_rows(NODE_ID, CSV_PATH)
+    print(f"Caricati {len(rows)} record. Loop continuo: {LOOP}")
 
-    # Stampa distribuzione Fire per conferma visiva
-    for nid, rows in all_rows.items():
-        fire_counts: dict = {}
-        for r in rows:
-            k = str(r.get("Fire"))
-            fire_counts[k] = fire_counts.get(k, 0) + 1
-        print(f"  {nid} Fire distribution: {dict(sorted(fire_counts.items()))}")
+    fire_counts: dict = {}
+    for r in rows:
+        k = str(r.get("Fire"))
+        fire_counts[k] = fire_counts.get(k, 0) + 1
+    print(f"  {NODE_ID} Fire distribution: {dict(sorted(fire_counts.items()))}")
 
-    delay_s = DELAY_MS / 1000.0
-    sent    = 0
-    pass_n  = 0
+    delay_s    = DELAY_MS / 1000.0
+    sent       = 0
+    pass_n     = 0
+    global_idx = 0
 
     try:
         while True:
             pass_n += 1
             print(f"--- Pass #{pass_n} ---")
-            # Emissione round-robin: tutti i nodi avanzano insieme, simula sensori concorrenti.
-            # zip_longest gestisce file di lunghezze diverse: i nodi esauriti vengono saltati
-            # nella passata corrente, poi ripartono al prossimo giro (LOOP=true).
-            iterators = {nid: iter(rows) for nid, rows in all_rows.items()}
-            for batch in zip_longest(*iterators.values()):
-                for node_id, record in zip(iterators.keys(), batch):
-                    if record is None:
-                        continue
-                    # Shallow copy: non mutare il dict persistente in all_rows
-                    msg = {
-                        **record,
-                        "ingest_ts": datetime.now(timezone.utc).strftime(
-                            "%Y-%m-%dT%H:%M:%S.%f"
-                        )[:-3] + "Z",
-                    }
-                    producer.send(TOPIC, key=node_id, value=msg).add_errback(_on_send_error)
-                    sent += 1
-                    if sent % 500 == 0:
-                        print(f"  Inviati {sent} messaggi (pass #{pass_n})...")
+            for record in rows:
+                msg = {
+                    **record,
+                    "reading_index": global_idx,
+                    "ingest_ts": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%S.%f"
+                    )[:-3] + "Z",
+                }
+                global_idx += 1
+                producer.send(TOPIC, key=NODE_ID, value=msg, partition=PARTITION).add_errback(_on_send_error)
+                sent += 1
+                if sent % 500 == 0:
+                    print(f"  Inviati {sent} messaggi (pass #{pass_n})...")
                 time.sleep(delay_s)
 
             producer.flush()
@@ -138,10 +118,7 @@ def main():
 
             if not LOOP:
                 break
-            # In modalità loop continuo il dato riparte dall'inizio simulando
-            # un flusso IoT infinito — ideale per la dashboard live
     finally:
-        producer.flush()
         producer.close()
         print("Producer terminato.")
 

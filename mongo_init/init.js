@@ -18,6 +18,17 @@ db.raw_readings.createIndex({ node_id: 1, ingest_ts: 1 });
 // M3: indice unico per deduplicazione — il connettore Spark usa idFieldList=node_id,reading_index
 db.raw_readings.createIndex({ node_id: 1, reading_index: 1 }, { unique: true });
 
+// ── processed_readings: dati post-elaborazione Spark (batch layer) ───────────
+// Contiene i dati filtrati e arricchiti: z-score, flag anomalia, fire_state_label.
+// Source of truth per rianalisi future senza ripassare da raw_readings + Welford.
+createIfMissing("processed_readings");
+db.processed_readings.createIndex({ node_id: 1 });
+db.processed_readings.createIndex({ ingest_ts: 1 });
+db.processed_readings.createIndex({ node_id: 1, ingest_ts: 1 });
+db.processed_readings.createIndex({ node_id: 1, reading_index: 1 }, { unique: true });
+db.processed_readings.createIndex({ is_anomaly: 1 });
+db.processed_readings.createIndex({ is_fire: 1 });
+
 // ── node_stats: statistiche Welford online per z-score (upsert per nodo) ──────
 createIfMissing("node_stats");
 db.node_stats.createIndex({ node_id: 1 }, { unique: true });

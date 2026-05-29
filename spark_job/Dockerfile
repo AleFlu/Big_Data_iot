@@ -41,10 +41,10 @@ RUN mkdir -p /opt/spark/jars && \
 # Create app dir with spark ownership
 RUN mkdir -p /spark/app && chown spark:spark /spark/app
 
-COPY spark_stream_job.py submit.sh /spark/app/
-RUN chmod +x /spark/app/submit.sh \
-    && chown spark:spark /spark/app/spark_stream_job.py /spark/app/submit.sh
+COPY spark_stream_job.py submit.sh entrypoint.sh /spark/app/
+RUN chmod +x /spark/app/submit.sh /spark/app/entrypoint.sh \
+    && chown spark:spark /spark/app/spark_stream_job.py /spark/app/submit.sh /spark/app/entrypoint.sh
 
 USER spark
 WORKDIR /spark/app
-ENTRYPOINT ["/spark/app/submit.sh"]
+ENTRYPOINT ["/spark/app/entrypoint.sh"]

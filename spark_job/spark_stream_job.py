@@ -214,13 +214,13 @@ def process_batch(batch_df, batch_id: int) -> None:
       2. Filtra outlier (CO > 1000 o Gas > 1M)
       3. Z-score Welford per 4 sensori
       4. Arricchimento: is_fire, fire_state_label
-      5. Scrivi su ES sensors_live_index (time-series)
-      6. Upsert su ES node_status_index (stato corrente per nodo)
-      7. Scrivi fire_events su MongoDB (solo righe Fire >= 1)
-      8. Rolling stats su MongoDB agg_per_nodo
+      5. Scrivi su MongoDB processed_readings (batch layer — dati arricchiti)
+      6. Scrivi su ES sensors_live_index (serving layer — time-series)
+      7. Upsert su ES node_status_index (stato corrente per nodo)
+      8. Scrivi fire_events su MongoDB (solo righe Fire >= 1)
+      9. Rolling stats su MongoDB agg_per_nodo
     """
-    rows_raw = batch_df.collect()
-    if not rows_raw:
+    if batch_df.isEmpty():
         return
 
     # ── 1. Raw write su MongoDB ───────────────────────────────────────────────
@@ -309,7 +309,31 @@ def process_batch(batch_df, batch_id: int) -> None:
         for nid, stats in node_stats_map.items()
     ])
 
-    # ── 5. Scrivi su ES sensors_live_index ────────────────────────────────────
+    # ── 5. Scrivi su MongoDB processed_readings (dati arricchiti, layer batch) ──
+    # Source of truth per rianalisi future: contiene i dati post-filtro con
+    # z-score, flag anomalia e fire_state_label — non ricalcolabili da raw_readings
+    # senza rieseguire Welford dall'inizio. Separazione Lambda: raw = immutabile,
+    # processed = elaborato, ES = serving layer per query veloci.
+    processed_docs = []
+    for row_dict in enriched_rows:
+        doc = {k: v for k, v in row_dict.items()
+               if not (isinstance(v, float) and v != v)}  # scarta NaN
+        if doc.get("Fire") is not None:
+            doc["Fire"] = int(doc["Fire"])
+        doc["is_anomaly"] = bool(doc.get("is_anomaly", False))
+        doc["is_fire"]    = bool(doc.get("is_fire", False))
+        processed_docs.append(doc)
+
+    if processed_docs:
+        db.processed_readings.bulk_write([
+            ReplaceOne(
+                {"node_id": d["node_id"], "reading_index": d["reading_index"]},
+                d, upsert=True
+            )
+            for d in processed_docs
+        ], ordered=False)
+
+    # ── 6. Scrivi su ES sensors_live_index (serving layer) ───────────────────
     es = get_es_client()
     actions = []
     for row_dict in enriched_rows:
@@ -322,7 +346,11 @@ def process_batch(batch_df, batch_id: int) -> None:
             doc["fire"] = int(doc["fire"])
         doc["is_anomaly"] = bool(doc.get("is_anomaly", False))
         doc["is_fire"]    = bool(doc.get("is_fire", False))
-        actions.append({"_index": ES_INDEX, "_source": doc})
+        actions.append({
+            "_index": ES_INDEX,
+            "_id":    f"{doc.get('node_id', '')}_{doc.get('reading_index', '')}",
+            "_source": doc,
+        })
 
     if actions:
         success, errors = helpers.bulk(
@@ -331,7 +359,7 @@ def process_batch(batch_df, batch_id: int) -> None:
         if errors:
             print(f"[WARN] sensors_live bulk: {len(errors)} failed in batch {batch_id}")
 
-    # ── 6. Upsert su ES node_status_index (1 doc per nodo) ───────────────────
+    # ── 7. Upsert su ES node_status_index (1 doc per nodo) ───────────────────
     # Per ogni nodo presente nel batch, prendi l'ultima riga (max ingest_ts)
     # e upsertala come documento di stato corrente.
     latest_per_node: dict[str, dict] = {}
@@ -379,7 +407,7 @@ def process_batch(batch_df, batch_id: int) -> None:
         if errors:
             print(f"[WARN] node_status bulk: {len(errors)} failed in batch {batch_id}")
 
-    # ── 7. Fire events su MongoDB (solo righe Fire >= 1) ─────────────────────
+    # ── 8. Fire events su MongoDB (solo righe Fire >= 1) ─────────────────────
     fire_rows = [r for r in enriched_rows if r.get("Fire") is not None and r["Fire"] >= 1]
     if fire_rows:
         fire_docs = []
@@ -392,16 +420,15 @@ def process_batch(batch_df, batch_id: int) -> None:
                 "co":            rd.get("CO"),
                 "smoke_ppm":     rd.get("Smoke (ppm)"),
             })
-        from pymongo import ReplaceOne as _ReplaceOne
         db.fire_events.bulk_write([
-            _ReplaceOne(
+            ReplaceOne(
                 {"node_id": d["node_id"], "ingest_ts": d["ingest_ts"]},
                 d, upsert=True
             )
             for d in fire_docs
         ], ordered=False)
 
-    # ── 8. Rolling stats su MongoDB agg_per_nodo ──────────────────────────────
+    # ── 9. Rolling stats su MongoDB agg_per_nodo ──────────────────────────────
     agg_rows = (batch_clean
                 .groupBy("node_id")
                 .agg(
@@ -438,18 +465,19 @@ def process_batch(batch_df, batch_id: int) -> None:
                     "running_sum_gas":  float(agg["batch_sum_gas"]   or 0),
                 },
                 # Min/max cumulativi — $min/$max sono atomici su MongoDB 7.0
-                "$min": {
+                # Guard None: $min/$max con null resetta il valore su MongoDB 7.0
+                "$min": {k: v for k, v in {
                     "running_min_temp":  agg["batch_min_temp"],
                     "running_min_co":    agg["batch_min_co"],
                     "running_min_smoke": agg["batch_min_smoke"],
                     "running_min_gas":   agg["batch_min_gas"],
-                },
-                "$max": {
+                }.items() if v is not None},
+                "$max": {k: v for k, v in {
                     "running_max_temp":  agg["batch_max_temp"],
                     "running_max_co":    agg["batch_max_co"],
                     "running_max_smoke": agg["batch_max_smoke"],
                     "running_max_gas":   agg["batch_max_gas"],
-                },
+                }.items() if v is not None},
                 # Ultimi valori del batch per riferimento rapido
                 "$set": {
                     "last_batch_avg_temp":  agg["batch_avg_temp"],

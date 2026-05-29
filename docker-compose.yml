@@ -140,37 +140,196 @@ services:
       retries: 10
       start_period: 30s
 
-  # ── CSV PRODUCER ────────────────────────────────────────────────────────────
-  csv-producer:
+  # ── CSV PRODUCERS (4 nodi separati) ─────────────────────────────────────────
+  csv-producer-1:
     build:
       context: ./csv_producer
       dockerfile: Dockerfile
     platform: linux/arm64
-    container_name: csv-producer
+    container_name: csv-producer-1
     networks: [iot_net]
     volumes:
       - ./acquisizioni:/data/acquisizioni:ro
     environment:
+      NODE_ID: nodo_1
+      CSV_PATH: /data/acquisizioni/Nodo_1/prima_acquisizione/nodo1_csv.csv
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: iot.sensor.data
+      KAFKA_PARTITION: "0"
       PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
       LOOP_FOREVER: "true"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
     restart: "no"
-    mem_limit: 256m
+    mem_limit: 128m
 
-  # ── SPARK STREAMING JOB ─────────────────────────────────────────────────────
+  csv-producer-2:
+    build:
+      context: ./csv_producer
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: csv-producer-2
+    networks: [iot_net]
+    volumes:
+      - ./acquisizioni:/data/acquisizioni:ro
+    environment:
+      NODE_ID: nodo_2
+      CSV_PATH: /data/acquisizioni/Nodo_2/prima_acquisizione/nodo2.csv
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: iot.sensor.data
+      KAFKA_PARTITION: "1"
+      PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
+      LOOP_FOREVER: "true"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 128m
+
+  csv-producer-3:
+    build:
+      context: ./csv_producer
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: csv-producer-3
+    networks: [iot_net]
+    volumes:
+      - ./acquisizioni:/data/acquisizioni:ro
+    environment:
+      NODE_ID: nodo_3
+      CSV_PATH: /data/acquisizioni/Nodo_3/prima_acq/nodo3_csv.csv
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: iot.sensor.data
+      KAFKA_PARTITION: "2"
+      PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
+      LOOP_FOREVER: "true"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 128m
+
+  csv-producer-4:
+    build:
+      context: ./csv_producer
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: csv-producer-4
+    networks: [iot_net]
+    volumes:
+      - ./acquisizioni:/data/acquisizioni:ro
+    environment:
+      NODE_ID: nodo_4
+      CSV_PATH: /data/acquisizioni/Nodo_4/nodo4_csv.csv
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: iot.sensor.data
+      KAFKA_PARTITION: "3"
+      PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
+      LOOP_FOREVER: "true"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: "no"
+    mem_limit: 128m
+
+  # ── SPARK CLUSTER ────────────────────────────────────────────────────────────
+  spark-master:
+    build:
+      context: ./spark_job
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: spark-master
+    hostname: spark-master
+    networks: [iot_net]
+    ports:
+      - "8082:8082"
+      - "7077:7077"
+    environment:
+      SPARK_ROLE: master
+    volumes:
+      - spark_checkpoints:/spark/checkpoints
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082 | grep -q 'Spark Master'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  spark-worker-1:
+    build:
+      context: ./spark_job
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: spark-worker-1
+    hostname: spark-worker-1
+    networks: [iot_net]
+    environment:
+      SPARK_ROLE: worker
+      SPARK_WORKER_CORES: "1"
+      SPARK_WORKER_MEMORY: 512m
+    volumes:
+      - spark_checkpoints:/spark/checkpoints
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    mem_limit: 640m
+    restart: unless-stopped
+
+  spark-worker-2:
+    build:
+      context: ./spark_job
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: spark-worker-2
+    hostname: spark-worker-2
+    networks: [iot_net]
+    environment:
+      SPARK_ROLE: worker
+      SPARK_WORKER_CORES: "1"
+      SPARK_WORKER_MEMORY: 512m
+    volumes:
+      - spark_checkpoints:/spark/checkpoints
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    mem_limit: 640m
+    restart: unless-stopped
+
+  spark-worker-3:
+    build:
+      context: ./spark_job
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: spark-worker-3
+    hostname: spark-worker-3
+    networks: [iot_net]
+    environment:
+      SPARK_ROLE: worker
+      SPARK_WORKER_CORES: "1"
+      SPARK_WORKER_MEMORY: 512m
+    volumes:
+      - spark_checkpoints:/spark/checkpoints
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    mem_limit: 640m
+    restart: unless-stopped
+
+  # ── SPARK STREAMING JOB (driver) ─────────────────────────────────────────────
   spark-job:
     build:
       context: ./spark_job
       dockerfile: Dockerfile
     platform: linux/arm64
     container_name: spark-job
+    hostname: spark-job
     networks: [iot_net]
     user: "root"
     environment:
+      SPARK_ROLE: driver
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: iot.sensor.data
       MONGO_URI: mongodb://mongodb:27017/sensor_data
@@ -182,6 +341,14 @@ services:
     volumes:
       - spark_checkpoints:/spark/checkpoints
     depends_on:
+      spark-master:
+        condition: service_healthy
+      spark-worker-1:
+        condition: service_started
+      spark-worker-2:
+        condition: service_started
+      spark-worker-3:
+        condition: service_started
       kafka:
         condition: service_healthy
       kafka-init:
@@ -190,7 +357,7 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-    mem_limit: 2048m
+    mem_limit: 768m
     restart: on-failure:3
 
   # ── MONGO EXPRESS ───────────────────────────────────────────────────────────
