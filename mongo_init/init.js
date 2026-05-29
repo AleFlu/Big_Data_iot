@@ -37,18 +37,9 @@ db.node_stats.createIndex({ node_id: 1 }, { unique: true });
 createIfMissing("agg_per_nodo");
 db.agg_per_nodo.createIndex({ node_id: 1 }, { unique: true });
 
-// ── node_latest_status: stato corrente per nodo (1 doc per nodo, upsert) ──────
-createIfMissing("node_latest_status");
-db.node_latest_status.createIndex({ node_id: 1 }, { unique: true });
-
 // ── fire_events: eventi incendio (Fire >= 1), TTL 30 giorni ───────────────────
 createIfMissing("fire_events");
 db.fire_events.createIndex({ node_id: 1, ingest_ts: -1 });
 db.fire_events.createIndex({ ingest_ts: 1 }, { expireAfterSeconds: 2592000 });
-
-// ── collezioni di output aggiuntive (compatibilità con il notebook) ────────────
-createIfMissing("agg_fire_comparison");
-createIfMissing("anomalies");
-createIfMissing("clean_readings");
 
 print("MongoDB: collezioni e indici inizializzati su sensor_data.");

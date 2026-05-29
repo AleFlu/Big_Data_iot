@@ -46,7 +46,7 @@ def load_csv_rows(node_id: str, path: str) -> list[dict]:
     rows = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for idx, row in enumerate(reader):
+        for row in reader:
             record = {}
             for field in NUMERIC_FIELDS:
                 raw = row.get(field, "").strip()
@@ -64,8 +64,7 @@ def load_csv_rows(node_id: str, path: str) -> list[dict]:
             except ValueError:
                 record["Fire"] = None
 
-            record["node_id"]       = node_id
-            record["reading_index"] = idx
+            record["node_id"] = node_id
             rows.append(record)
 
     print(f"  {node_id}: {len(rows)} righe caricate da {path.split('/')[-1]}")
