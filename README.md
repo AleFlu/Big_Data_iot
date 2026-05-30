@@ -2,6 +2,17 @@
 
 > 4 sensor nodes · Kafka · Spark Structured Streaming · Elasticsearch · MongoDB · Grafana
 
+<p>
+  <img alt="Kafka" src="https://img.shields.io/badge/Kafka-7.6.1-231F20?logo=apachekafka&logoColor=white">
+  <img alt="Spark" src="https://img.shields.io/badge/Spark-3.5.3-E25A1C?logo=apachespark&logoColor=white">
+  <img alt="Elasticsearch" src="https://img.shields.io/badge/Elasticsearch-7.17-005571?logo=elasticsearch&logoColor=white">
+  <img alt="MongoDB" src="https://img.shields.io/badge/MongoDB-7.0-47A248?logo=mongodb&logoColor=white">
+  <img alt="Grafana" src="https://img.shields.io/badge/Grafana-10.4-F46800?logo=grafana&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker%20Compose-orchestrated-2496ED?logo=docker&logoColor=white">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
+</p>
+
 ---
 
 ## Quick start
@@ -168,8 +179,8 @@ Spark Structured Streaming — foreachBatch
     │  Filter outliers: CO > 1000 ppm or Gas > 1 MΩ  →  discarded
     │
     │  ── enrichment ─────────────────────────────────────────────────────────
-    │  Welford online z-score (Temperature, CO, Smoke, Gas)
-    │  Absolute thresholds: CO > 50 ppm · Smoke > 0.08 · Temp > 35 °C
+    │  Welford online signed z-score (Temperature, CO, Smoke, Gas)
+    │  Absolute thresholds: CO > 50 ppm · Smoke > 0.08 · Temp > 35 °C · Gas < 5 kΩ
     │  Fire transition: flag raised only when Fire crosses 0 → ≥1
     │
     ├─ 2. Write enriched rows → MongoDB  processed_readings
@@ -181,8 +192,8 @@ Spark Structured Streaming — foreachBatch
 
 **Anomaly detection** — two complementary mechanisms run in parallel:
 
-- **Welford online z-score** — mean and variance updated incrementally without storing history. State `{count, mean, m2}` is persisted in MongoDB `node_stats` and survives container restarts. An anomaly is flagged when `z > 2σ` on any of the four sensors.
-- **Absolute thresholds** — CO > 50 ppm, Smoke > 0.08 ppm, Temperature > 35 °C. These cover the Welford warm-up period and nodes with a structurally elevated baseline.
+- **Welford online signed z-score** — mean and variance updated incrementally without storing history. State `{count, mean, m2}` is persisted in MongoDB `node_stats` and survives container restarts. The z-score is **signed** (positive for spikes above the mean, negative for drops below — e.g. a failing sensor), so the Grafana trends distinguish a surge from a collapse. An anomaly is flagged when `|z| > 2σ` on any of the four sensors.
+- **Absolute thresholds** — CO > 50 ppm, Smoke > 0.08 ppm, Temperature > 35 °C, Gas < 5 kΩ. These cover **all four sensors** during the Welford warm-up (when `n=1` the std is 0 and the z-score is forced to 0) and nodes with a structurally elevated baseline.
 
 **Fire transition logic** — a `fire_event` is recorded only when a node transitions from no-fire (Fire = 0) to fire (Fire ≥ 1), not on every row where Fire ≥ 1. This avoids flooding the collection with noise from nodes that are permanently near fire. The previous fire value (`last_fire_value`) is persisted in MongoDB `node_stats` per node.
 
@@ -261,3 +272,40 @@ The driver runs in **client mode**: `foreachBatch` logic executes in the `spark-
 | **Total** | **~6.4 GB** |
 
 Set at least **8 GB** in Docker Desktop → Settings → Resources → Memory.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `spark-job` exits / restarts | Kafka or ES not healthy yet at startup | `docker compose logs -f spark-job`; the job has `restart: on-failure:3` and recovers once dependencies are healthy |
+| Grafana panels empty | Producers not started, or time range outside ingested window | Confirm `csv-producer-*` are running; set the Grafana time range to **Last 15 minutes** |
+| `Topic iot.sensor.data not present` | `kafka-init` ran before Kafka was healthy | Re-run `docker compose up kafka-init` |
+| Two nodes on the same Kafka partition | `KAFKA_PARTITION` not set on a producer | Each producer pins an explicit partition (0–3) in `docker-compose.yml`; a missing value logs a `[WARN]` and falls back to key hashing |
+| Stale data after long downtime | Kafka retention is 24 h; older offsets are gone | `failOnDataLoss=false` skips missing offsets silently — for a clean restart use `docker compose down -v` |
+
+---
+
+## Project layout recap
+
+```
+.
+├── docker-compose.yml          # 14-service orchestration
+├── .env.example                # Environment template (copy to .env)
+├── csv_producer/               # Parametric Kafka producer (1 per node)
+├── spark_job/                  # Spark Structured Streaming pipeline + cluster image
+├── mongo_init/                 # MongoDB collections, indexes and TTLs (init.js)
+└── grafana/provisioning/       # Datasources + 2 auto-provisioned dashboards
+```
+
+---
+
+## License
+
+Released under the **MIT License** — see [LICENSE](LICENSE).
+
+## Authors
+
+University project for the **Big Data** course (Master's degree).
+Repository: <https://github.com/AleFlu/Big_Data_iot>
