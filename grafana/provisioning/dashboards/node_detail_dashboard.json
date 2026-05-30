@@ -64,7 +64,7 @@
       "type": "stat",
       "datasource": {
         "type": "elasticsearch",
-        "uid": "${DS_ES}"
+        "uid": "${DS_ES_STATUS}"
       },
       "fieldConfig": {
         "defaults": {
@@ -72,10 +72,15 @@
             {
               "type": "value",
               "options": {
-                "0": {
+                "true": {
+                  "text": "FIRE",
+                  "color": "red",
+                  "index": 0
+                },
+                "false": {
                   "text": "NO FIRE",
                   "color": "green",
-                  "index": 0
+                  "index": 1
                 }
               }
             },
@@ -86,7 +91,7 @@
                 "result": {
                   "text": "NO FIRE",
                   "color": "green",
-                  "index": 1
+                  "index": 2
                 }
               }
             },
@@ -97,7 +102,7 @@
                 "result": {
                   "text": "NO FIRE",
                   "color": "green",
-                  "index": 2
+                  "index": 3
                 }
               }
             }
@@ -125,9 +130,9 @@
       "options": {
         "reduceOptions": {
           "calcs": [
-            "sum"
+            "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/^is_fire$/",
           "values": false
         },
         "orientation": "auto",
@@ -147,27 +152,20 @@
           "refId": "A",
           "datasource": {
             "type": "elasticsearch",
-            "uid": "${DS_ES}"
+            "uid": "${DS_ES_STATUS}"
           },
-          "query": "node_id:$node AND is_fire:true",
+          "query": "_id:$node",
           "metrics": [
             {
               "id": "1",
-              "type": "count"
-            }
-          ],
-          "bucketAggs": [
-            {
-              "id": "2",
-              "type": "date_histogram",
-              "field": "ingest_ts",
               "settings": {
-                "interval": "auto",
-                "min_doc_count": "1"
-              }
+                "size": "1"
+              },
+              "type": "raw_data"
             }
           ],
-          "timeField": "ingest_ts"
+          "bucketAggs": [],
+          "timeField": "last_update_ts"
         }
       ]
     },
@@ -1892,7 +1890,7 @@
       "title": "Temperatura Min / Max storico",
       "datasource": {
         "type": "elasticsearch",
-        "uid": "${DS_ES}"
+        "uid": "${DS_ES_STATUS}"
       },
       "gridPos": {
         "h": 5,
@@ -1945,7 +1943,7 @@
           "refId": "A",
           "datasource": {
             "type": "elasticsearch",
-            "uid": "${DS_ES}"
+            "uid": "${DS_ES_STATUS}"
           },
           "query": "_id:$node",
           "metrics": [
@@ -1968,7 +1966,7 @@
       "title": "CO Min / Max storico",
       "datasource": {
         "type": "elasticsearch",
-        "uid": "${DS_ES}"
+        "uid": "${DS_ES_STATUS}"
       },
       "gridPos": {
         "h": 5,
@@ -2021,7 +2019,7 @@
           "refId": "A",
           "datasource": {
             "type": "elasticsearch",
-            "uid": "${DS_ES}"
+            "uid": "${DS_ES_STATUS}"
           },
           "query": "_id:$node",
           "metrics": [
@@ -2044,7 +2042,7 @@
       "title": "Smoke Min / Max storico",
       "datasource": {
         "type": "elasticsearch",
-        "uid": "${DS_ES}"
+        "uid": "${DS_ES_STATUS}"
       },
       "gridPos": {
         "h": 5,
@@ -2098,7 +2096,7 @@
           "refId": "A",
           "datasource": {
             "type": "elasticsearch",
-            "uid": "${DS_ES}"
+            "uid": "${DS_ES_STATUS}"
           },
           "query": "_id:$node",
           "metrics": [
@@ -2121,7 +2119,7 @@
       "title": "Record Totali Processati",
       "datasource": {
         "type": "elasticsearch",
-        "uid": "${DS_ES}"
+        "uid": "${DS_ES_STATUS}"
       },
       "gridPos": {
         "h": 5,
@@ -2166,7 +2164,7 @@
           "refId": "A",
           "datasource": {
             "type": "elasticsearch",
-            "uid": "${DS_ES}"
+            "uid": "${DS_ES_STATUS}"
           },
           "query": "_id:$node",
           "metrics": [
@@ -2189,7 +2187,7 @@
       "title": "Gas Min / Max storico",
       "datasource": {
         "type": "elasticsearch",
-        "uid": "${DS_ES}"
+        "uid": "${DS_ES_STATUS}"
       },
       "gridPos": {
         "h": 5,
@@ -2243,7 +2241,7 @@
           "refId": "A",
           "datasource": {
             "type": "elasticsearch",
-            "uid": "${DS_ES}"
+            "uid": "${DS_ES_STATUS}"
           },
           "query": "_id:$node",
           "metrics": [
@@ -2323,6 +2321,17 @@
         "query": "elasticsearch",
         "refresh": 1,
         "type": "datasource"
+      },
+      {
+        "hide": 2,
+        "name": "DS_ES_STATUS",
+        "query": "elasticsearch",
+        "refresh": 1,
+        "type": "datasource",
+        "current": {
+          "text": "Elasticsearch-NodeStatus",
+          "value": "Elasticsearch-NodeStatus"
+        }
       }
     ]
   },
