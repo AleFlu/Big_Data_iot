@@ -2,133 +2,6 @@
 
 > 4 sensor nodes · Kafka · Spark Structured Streaming · Elasticsearch · MongoDB · Grafana
 
-A fully containerised streaming pipeline that ingests environmental sensor data from 4 independent IoT nodes, processes it in real-time with anomaly detection and fire-transition logic, and visualises everything on live Grafana dashboards refreshed every 5 seconds.
-
-Built as a university project for the Big Data course (Master's degree), the system intentionally simulates a **multi-machine deployment**: each sensor node runs in its own container, Spark runs as a Standalone cluster (1 master + 3 workers), and every service communicates via explicit hostnames as it would on separate physical hosts.
-
----
-
-## Architecture
-
-```
-[machine-1]  csv-producer-1 (nodo_1) ──┐
-[machine-2]  csv-producer-2 (nodo_2) ──┤──► Kafka  ──► Spark Standalone Cluster
-[machine-3]  csv-producer-3 (nodo_3) ──┤   4 parts        │
-[machine-4]  csv-producer-4 (nodo_4) ──┘                  ▼
-                                               ┌───────────┴────────────┐
-                                          MongoDB                 Elasticsearch
-                                        5 collections              2 indices
-                                               └───────────┬────────────┘
-                                                           ▼
-                                                        Grafana
-```
-
-![architecture](architettura.svg)
-
----
-
-## Tech Stack
-
-| Component | Technology | Version |
-|---|---|---|
-| Message broker | Confluent Kafka (KRaft, no ZooKeeper) | 7.6.1 |
-| Stream processing | Apache Spark Structured Streaming | 3.5.3 |
-| Time-series store | Elasticsearch | 7.17.28 |
-| Document store | MongoDB | 7.0 |
-| Dashboards | Grafana | 10.4.2 |
-| Producer | Python + kafka-python | 3.11 |
-| Platform | Docker Compose · ARM64 (Apple Silicon) | — |
-
----
-
-## What the pipeline does
-
-Each sensor node continuously streams CSV rows to a dedicated Kafka partition. Spark consumes them in micro-batches every 5 seconds and runs the full enrichment pipeline before writing to multiple sinks:
-
-```
-CSV Producer ×4
-    │  JSON messages (key = node_id, explicit partition 0–3)
-    ▼
-Kafka  iot.sensor.data  (4 partitions · 24h retention)
-    │  micro-batch every 5s · max 200 offsets/partition
-    ▼
-Spark Structured Streaming — foreachBatch
-    │
-    ├─ 1. Write raw JSON → MongoDB  raw_readings         (immutable history)
-    │
-    │  ── cleaning ──────────────────────────────────────────────────────────
-    │  Filter outliers: CO > 1000 ppm or Gas > 1 MΩ  →  discarded
-    │
-    │  ── enrichment ─────────────────────────────────────────────────────────
-    │  Welford online z-score (Temperature, CO, Smoke, Gas)
-    │  Absolute thresholds: CO > 50 ppm · Smoke > 0.08 · Temp > 35 °C
-    │  Fire transition: flag raised only when Fire crosses 0 → ≥1
-    │
-    ├─ 2. Write enriched rows → MongoDB  processed_readings
-    ├─ 3. Bulk index  → Elasticsearch  sensors_live_index  (time-series)
-    ├─ 4. Upsert      → Elasticsearch  node_status_index   (1 doc/node, live status)
-    ├─ 5. Write       → MongoDB  fire_events               (transition events only)
-    └─ 6. Upsert      → MongoDB  agg_per_nodo              (rolling stats)
-```
-
-### Anomaly detection
-
-Two complementary mechanisms run in parallel:
-
-- **Welford online z-score** — mean and variance updated incrementally without storing history. State `{count, mean, m2}` is persisted in MongoDB `node_stats` and survives container restarts. An anomaly is flagged when `z > 2σ` on any of the four sensors.
-- **Absolute thresholds** — CO > 50 ppm, Smoke > 0.08 ppm, Temperature > 35 °C. These cover the Welford warm-up period and nodes with a structurally elevated baseline.
-
-### Fire transition logic
-
-A `fire_event` is recorded **only when a node transitions from no-fire (Fire = 0) to fire (Fire ≥ 1)**, not on every row where Fire ≥ 1. This avoids flooding the collection with noise from nodes that are permanently near fire. The previous fire value (`last_fire_value`) is persisted in MongoDB `node_stats` per node.
-
-### Lambda Architecture
-
-| Layer | Sink | Content |
-|---|---|---|
-| Batch — raw | `raw_readings` | Every message before any filtering |
-| Batch — processed | `processed_readings` | Post-filter with z-scores and anomaly flags |
-| Serving — time-series | `sensors_live_index` | Grafana time-series queries |
-| Serving — live status | `node_status_index` | Current snapshot per node (Fire / NO FIRE cards) |
-
----
-
-## Repository structure
-
-```
-.
-├── docker-compose.yml          # Full orchestration (14 services)
-├── .env.example                # Environment variable template
-├── csv_producer/
-│   ├── csv_producer.py         # Parametric producer (NODE_ID + CSV_PATH)
-│   ├── Dockerfile
-│   └── requirements.txt
-├── spark_job/
-│   ├── spark_stream_job.py     # Full pipeline (~520 lines)
-│   ├── entrypoint.sh           # Dispatches SPARK_ROLE: master | worker | driver
-│   ├── submit.sh               # spark-submit to standalone cluster
-│   ├── Dockerfile
-│   └── requirements.txt
-├── mongo_init/
-│   └── init.js                 # Creates collections and indexes on first run
-├── grafana/
-│   └── provisioning/           # Dashboards and datasources provisioned from files
-├── architettura.svg
-└── RELAZIONE_TECNICA.md
-```
-
-> **Not included in the repo** (must be provided manually):
-> - `.env` — generate from `.env.example`
-> - `acquisizioni/` — CSV files from physical sensors
-
----
-
-## Prerequisites
-
-- **Docker Desktop** running (Apple Silicon M1/M2)
-- **8 GB** allocated to the Docker VM (system uses ~6.4 GB)
-- Sensor CSV files placed in `acquisizioni/` (see structure below)
-
 ---
 
 ## Quick start
@@ -233,7 +106,96 @@ docker compose up -d grafana mongo-express kafka-ui
 
 ---
 
-## Grafana dashboards
+## Full reset
+
+```bash
+docker compose down -v
+docker compose build --no-cache
+docker compose up -d
+```
+
+---
+
+## What this project does
+
+A fully containerised streaming pipeline that ingests environmental sensor data from 4 independent IoT nodes, processes it in real-time with anomaly detection and fire-transition logic, and visualises everything on live Grafana dashboards refreshed every 5 seconds.
+
+Built as a university project for the Big Data course (Master's degree), the system intentionally simulates a **multi-machine deployment**: each sensor node runs in its own container, Spark runs as a Standalone cluster (1 master + 3 workers), and every service communicates via explicit hostnames as it would on separate physical hosts.
+
+### Architecture
+
+```
+[machine-1]  csv-producer-1 (nodo_1) ──┐
+[machine-2]  csv-producer-2 (nodo_2) ──┤──► Kafka  ──► Spark Standalone Cluster
+[machine-3]  csv-producer-3 (nodo_3) ──┤   4 parts        │
+[machine-4]  csv-producer-4 (nodo_4) ──┘                  ▼
+                                               ┌───────────┴────────────┐
+                                          MongoDB                 Elasticsearch
+                                        5 collections              2 indices
+                                               └───────────┬────────────┘
+                                                           ▼
+                                                        Grafana
+```
+
+### Tech Stack
+
+| Component | Technology | Version |
+|---|---|---|
+| Message broker | Confluent Kafka (KRaft, no ZooKeeper) | 7.6.1 |
+| Stream processing | Apache Spark Structured Streaming | 3.5.3 |
+| Time-series store | Elasticsearch | 7.17.28 |
+| Document store | MongoDB | 7.0 |
+| Dashboards | Grafana | 10.4.2 |
+| Producer | Python + kafka-python | 3.11 |
+| Platform | Docker Compose · ARM64 (Apple Silicon) | — |
+
+### Pipeline
+
+Each sensor node continuously streams CSV rows to a dedicated Kafka partition. Spark consumes them in micro-batches every 5 seconds and runs the full enrichment pipeline before writing to multiple sinks:
+
+```
+CSV Producer ×4
+    │  JSON messages (key = node_id, explicit partition 0–3)
+    ▼
+Kafka  iot.sensor.data  (4 partitions · 24h retention)
+    │  micro-batch every 5s · max 200 offsets/partition
+    ▼
+Spark Structured Streaming — foreachBatch
+    │
+    ├─ 1. Write raw JSON → MongoDB  raw_readings         (immutable history)
+    │
+    │  ── cleaning ──────────────────────────────────────────────────────────
+    │  Filter outliers: CO > 1000 ppm or Gas > 1 MΩ  →  discarded
+    │
+    │  ── enrichment ─────────────────────────────────────────────────────────
+    │  Welford online z-score (Temperature, CO, Smoke, Gas)
+    │  Absolute thresholds: CO > 50 ppm · Smoke > 0.08 · Temp > 35 °C
+    │  Fire transition: flag raised only when Fire crosses 0 → ≥1
+    │
+    ├─ 2. Write enriched rows → MongoDB  processed_readings
+    ├─ 3. Bulk index  → Elasticsearch  sensors_live_index  (time-series)
+    ├─ 4. Upsert      → Elasticsearch  node_status_index   (1 doc/node, live status)
+    ├─ 5. Write       → MongoDB  fire_events               (transition events only)
+    └─ 6. Upsert      → MongoDB  agg_per_nodo              (rolling stats)
+```
+
+**Anomaly detection** — two complementary mechanisms run in parallel:
+
+- **Welford online z-score** — mean and variance updated incrementally without storing history. State `{count, mean, m2}` is persisted in MongoDB `node_stats` and survives container restarts. An anomaly is flagged when `z > 2σ` on any of the four sensors.
+- **Absolute thresholds** — CO > 50 ppm, Smoke > 0.08 ppm, Temperature > 35 °C. These cover the Welford warm-up period and nodes with a structurally elevated baseline.
+
+**Fire transition logic** — a `fire_event` is recorded only when a node transitions from no-fire (Fire = 0) to fire (Fire ≥ 1), not on every row where Fire ≥ 1. This avoids flooding the collection with noise from nodes that are permanently near fire. The previous fire value (`last_fire_value`) is persisted in MongoDB `node_stats` per node.
+
+**Lambda Architecture:**
+
+| Layer | Sink | Content |
+|---|---|---|
+| Batch — raw | `raw_readings` | Every message before any filtering |
+| Batch — processed | `processed_readings` | Post-filter with z-scores and anomaly flags |
+| Serving — time-series | `sensors_live_index` | Grafana time-series queries |
+| Serving — live status | `node_status_index` | Current snapshot per node (Fire / NO FIRE cards) |
+
+### Grafana dashboards
 
 Two dashboards are provisioned automatically:
 
@@ -246,9 +208,7 @@ Two dashboards are provisioned automatically:
 - All sensors overlaid on a single time axis
 - Z-score trend, anomaly timeline, rolling stats
 
----
-
-## Spark cluster roles
+### Spark cluster roles
 
 The same Docker image handles all Spark roles, selected via `SPARK_ROLE`:
 
@@ -260,9 +220,33 @@ The same Docker image handles all Spark roles, selected via `SPARK_ROLE`:
 
 The driver runs in **client mode**: `foreachBatch` logic executes in the `spark-job` container; workers handle only the Spark DataFrame parsing and filtering tasks assigned by the master.
 
----
+### Repository structure
 
-## Memory requirements
+```
+.
+├── docker-compose.yml          # Full orchestration (14 services)
+├── .env.example                # Environment variable template
+├── csv_producer/
+│   ├── csv_producer.py         # Parametric producer (NODE_ID + CSV_PATH)
+│   ├── Dockerfile
+│   └── requirements.txt
+├── spark_job/
+│   ├── spark_stream_job.py     # Full pipeline (~520 lines)
+│   ├── entrypoint.sh           # Dispatches SPARK_ROLE: master | worker | driver
+│   ├── submit.sh               # spark-submit to standalone cluster
+│   ├── Dockerfile
+│   └── requirements.txt
+├── mongo_init/
+│   └── init.js                 # Creates collections and indexes on first run
+└── grafana/
+    └── provisioning/           # Dashboards and datasources provisioned from files
+```
+
+> **Not included in the repo** (must be provided manually):
+> - `.env` — generate from `.env.example`
+> - `acquisizioni/` — CSV files from physical sensors
+
+### Memory requirements
 
 | Service | mem_limit |
 |---|---|
@@ -277,16 +261,3 @@ The driver runs in **client mode**: `foreachBatch` logic executes in the `spark-
 | **Total** | **~6.4 GB** |
 
 Set at least **8 GB** in Docker Desktop → Settings → Resources → Memory.
-
----
-
-## Full reset
-
-```bash
-# Stop everything and wipe all volumes (ES, MongoDB, Kafka, Spark checkpoints)
-docker compose down -v
-
-# Rebuild from scratch
-docker compose build --no-cache
-docker compose up -d
-```
