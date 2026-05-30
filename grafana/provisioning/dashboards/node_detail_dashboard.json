@@ -805,14 +805,21 @@
           },
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 5
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": -2
               },
               {
                 "color": "red",
@@ -886,7 +893,27 @@
           },
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 5
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
           }
         },
         "overrides": []
@@ -954,7 +981,27 @@
           },
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 5
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
           }
         },
         "overrides": []
@@ -1022,7 +1069,27 @@
           },
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 5
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
           }
         },
         "overrides": []
@@ -1806,162 +1873,392 @@
           "alias": "Luce Visibile"
         }
       ]
-    }
-    ,{
+    },
+    {
       "id": 60,
       "type": "row",
       "title": "Range Storico (Lambda — Batch Layer)",
-      "gridPos": { "x": 0, "y": 58, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 1
+      },
       "collapsed": false
     },
     {
       "id": 61,
       "type": "stat",
       "title": "Temperatura Min / Max storico",
-      "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 59 },
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "${DS_ES}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 59
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "celsius",
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue",   "value": null },
-              { "color": "orange", "value": 30 },
-              { "color": "red",    "value": 40 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 40
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^running_(min|max)_temp$/", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^running_(min|max)_temp$/",
+          "values": false
+        },
         "orientation": "horizontal",
         "textMode": "value_and_name",
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center"
       },
-      "targets": [{
-        "refId": "A",
-        "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-        "query": "_id:$node",
-        "metrics": [{ "id": "1", "settings": { "size": "1" }, "type": "raw_data" }],
-        "bucketAggs": [],
-        "timeField": "last_update_ts"
-      }]
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "${DS_ES}"
+          },
+          "query": "_id:$node",
+          "metrics": [
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
+          ],
+          "bucketAggs": [],
+          "timeField": "last_update_ts"
+        }
+      ]
     },
     {
       "id": 62,
       "type": "stat",
       "title": "CO Min / Max storico",
-      "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 59 },
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "${DS_ES}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 59
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "ppm",
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green",  "value": null },
-              { "color": "orange", "value": 50 },
-              { "color": "red",    "value": 150 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 150
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^running_(min|max)_co$/", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^running_(min|max)_co$/",
+          "values": false
+        },
         "orientation": "horizontal",
         "textMode": "value_and_name",
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center"
       },
-      "targets": [{
-        "refId": "A",
-        "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-        "query": "_id:$node",
-        "metrics": [{ "id": "1", "settings": { "size": "1" }, "type": "raw_data" }],
-        "bucketAggs": [],
-        "timeField": "last_update_ts"
-      }]
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "${DS_ES}"
+          },
+          "query": "_id:$node",
+          "metrics": [
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
+          ],
+          "bucketAggs": [],
+          "timeField": "last_update_ts"
+        }
+      ]
     },
     {
       "id": 63,
       "type": "stat",
       "title": "Smoke Min / Max storico",
-      "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 59 },
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "${DS_ES}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 59
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "ppm",
           "decimals": 4,
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green",  "value": null },
-              { "color": "orange", "value": 0.08 },
-              { "color": "red",    "value": 0.15 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.08
+              },
+              {
+                "color": "red",
+                "value": 0.15
+              }
             ]
           }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^running_(min|max)_smoke$/", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^running_(min|max)_smoke$/",
+          "values": false
+        },
         "orientation": "horizontal",
         "textMode": "value_and_name",
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center"
       },
-      "targets": [{
-        "refId": "A",
-        "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-        "query": "_id:$node",
-        "metrics": [{ "id": "1", "settings": { "size": "1" }, "type": "raw_data" }],
-        "bucketAggs": [],
-        "timeField": "last_update_ts"
-      }]
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "${DS_ES}"
+          },
+          "query": "_id:$node",
+          "metrics": [
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
+          ],
+          "bucketAggs": [],
+          "timeField": "last_update_ts"
+        }
+      ]
     },
     {
       "id": 64,
       "type": "stat",
       "title": "Record Totali Processati",
-      "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 59 },
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "${DS_ES}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 59
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "blue", "value": null }]
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
           }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^total_processed$/", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^total_processed$/",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "value_and_name",
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "center"
       },
-      "targets": [{
-        "refId": "A",
-        "datasource": { "type": "elasticsearch", "uid": "${DS_ES}" },
-        "query": "_id:$node",
-        "metrics": [{ "id": "1", "settings": { "size": "1" }, "type": "raw_data" }],
-        "bucketAggs": [],
-        "timeField": "last_update_ts"
-      }]
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "${DS_ES}"
+          },
+          "query": "_id:$node",
+          "metrics": [
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
+          ],
+          "bucketAggs": [],
+          "timeField": "last_update_ts"
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "type": "stat",
+      "title": "Gas Min / Max storico",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "${DS_ES}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5000
+              },
+              {
+                "color": "green",
+                "value": 10000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^running_(min|max)_gas$/",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "${DS_ES}"
+          },
+          "query": "_id:$node",
+          "metrics": [
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
+          ],
+          "bucketAggs": [],
+          "timeField": "last_update_ts"
+        }
+      ]
     }
   ],
   "refresh": "5s",

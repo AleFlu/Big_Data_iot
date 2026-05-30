@@ -225,14 +225,17 @@ Ogni documento che entra in ES viene arricchito con questi campi calcolati:
 
 | Campo | Tipo | Descrizione |
 |-------|------|-------------|
-| `zscore_Temperature` | float | Z-score online (Welford) per temperatura |
-| `zscore_CO` | float | Z-score online per CO |
-| `zscore_Smoke` | float | Z-score online per smoke |
-| `zscore_Gas` | float | Z-score online per gas |
-| `is_anomaly` | boolean | `true` se almeno una soglia (z-score o assoluta) è superata |
+| `zscore_Temperature` | float | Z-score online firmato (Welford) per temperatura |
+| `zscore_CO` | float | Z-score online firmato per CO |
+| `zscore_Smoke` | float | Z-score online firmato per smoke |
+| `zscore_Gas` | float | Z-score online firmato per gas |
+| `is_anomaly` | boolean | `true` se almeno una soglia (`|z| > 2` o assoluta) è superata |
 | `anomaly_sensors` | keyword | Lista sensori anomali (es. `"CO, Temperature"`) |
 | `is_fire` | boolean | `true` se `Fire >= 1` |
+| `is_fire_transition` | boolean | `true` solo nel passaggio no-fire → fire (`0/None` → `>=1`) |
 | `fire_state_label` | keyword | `"NORMAL"`, `"FIRE"`, `"SPECIAL"`, `"N/A"` |
+
+Lo **z-score è firmato**: positivo quando il valore è sopra la media storica del nodo, negativo quando è sotto. Questo permette di distinguere visivamente un'impennata (es. picco di temperatura) da un crollo (es. guasto o disconnessione del sensore) nei grafici Grafana. La classificazione di anomalia avviene sul **valore assoluto** (`|z| > 2`), quindi è simmetrica nelle due direzioni.
 
 ---
 
@@ -252,10 +255,10 @@ mean = mean_old + δ/n
 δ2   = x - mean_new
 m2   = m2_old + δ × δ2
 std  = sqrt(m2 / (n-1))     ← varianza campionaria (non di popolazione)
-z    = |x - mean| / std
+z    = (x - mean) / std     ← z-score firmato (segno = direzione dello scostamento)
 ```
 
-Lo z-score misura quante deviazioni standard il valore corrente si allontana dalla media storica del **nodo specifico**. Un valore `z > 2` viene classificato come anomalia. La soglia di 2σ include il 95.4% dei valori "normali" in una distribuzione gaussiana, quindi il 4.6% dei punti normali viene segnalato come falso positivo — accettabile per un sistema di early warning.
+Lo z-score misura quante deviazioni standard il valore corrente si allontana dalla media storica del **nodo specifico**. È **firmato**: positivo sopra la media, negativo sotto, così i grafici distinguono un picco da un crollo. La classificazione di anomalia usa il valore assoluto: `|z| > 2`. La soglia di 2σ include il 95.4% dei valori "normali" in una distribuzione gaussiana, quindi il 4.6% dei punti normali viene segnalato come falso positivo — accettabile per un sistema di early warning. I pannelli Grafana z-score mostrano le bande di soglia simmetriche a `+2` e `-2`.
 
 La varianza **campionaria** (divisa per `n-1`, formula di Bessel) è preferita a quella di popolazione (divisa per `n`) per correggere il bias di sottostima nelle prime letture, quando `n` è piccolo.
 
@@ -270,13 +273,14 @@ Le soglie assolute scattano indipendentemente dallo z-score e sono ancorate ai v
 | CO | > 50 ppm | La baseline normale è 1-5 ppm. Sopra 50 ppm c'è combustione attiva (nodo_3 con fire=1/2 raggiunge 993 ppm). La soglia OSHA per esposizione lavorativa è 50 ppm/8h. |
 | Smoke | > 0.08 ppm | Baseline normale 0.01-0.04 ppm. Durante eventi fire il nodo_2 raggiunge 0.18 ppm. La soglia a 0.08 è il doppio del massimo baseline: distingue rumore dal segnale. |
 | Temperatura | > 35°C | Range normale 20-32°C dai dati. Sopra 35°C c'è riscaldamento anomalo (allineato alla soglia arancione su Grafana per coerenza visiva). |
+| Gas | < 5 000 Ohm | Il sensore BME680 misura una **resistenza** che *cala* in presenza di composti volatili (fumo, gas combusti): baseline ~10k-200k Ohm, una caduta sotto 5 kΩ segnala alta concentrazione. È l'unica soglia con verso *minore-di*, perché qui il segnale di rischio è una diminuzione, non un aumento. |
 
-Le soglie assolute hanno due ruoli specifici che lo z-score non copre:
+Le soglie assolute coprono **tutti e quattro i sensori** (CO, Smoke, Temperatura, Gas) e hanno due ruoli specifici che lo z-score non copre:
 
-1. **Early detection**: nelle prime letture (n piccolo, Welford instabile) le soglie assolute rilevano subito eventi pericolosi
-2. **Baseline alta**: se un nodo ha una baseline strutturalmente alta (es. nodo_2 sempre in fire), tutti i valori alti hanno z-score basso — le soglie assolute garantiscono comunque il rilevamento
+1. **Early detection / warm-up**: alla prima lettura di un sensore `n=1`, quindi la deviazione standard campionaria è indefinita (`std=0`) e lo z-score è forzato a 0. In questa fase solo le soglie assolute rilevano eventi pericolosi. Coprendo tutti e 4 i sensori, nessuno resta scoperto durante il warm-up.
+2. **Baseline alta**: se un nodo ha una baseline strutturalmente alta (es. nodo_2 sempre in fire), tutti i valori alti hanno z-score basso — le soglie assolute garantiscono comunque il rilevamento.
 
-I flag prodotti dai due meccanismi usano gli stessi nomi (`CO`, `Smoke`, `Temperature`) per coerenza: il campo `anomaly_sensors` in ES è filtrabile in Grafana senza distinzione di origine.
+I flag prodotti dai due meccanismi usano gli stessi nomi (`CO`, `Smoke`, `Temperature`, `Gas`) per coerenza: il campo `anomaly_sensors` in ES è filtrabile in Grafana senza distinzione di origine (z-score o soglia assoluta).
 
 ### 5.3 Flag Fire (sensore dedicato)
 
@@ -332,7 +336,11 @@ Uno documento per nodo con lo stato Welford corrente: `{count, mean, m2}` per ci
 
 ### 6.6 MongoDB — `fire_events`
 
-Registro di tutti i record con `Fire >= 1`. Scrittura idempotente via `ReplaceOne(filter={"node_id": ..., "ingest_ts": ...}, upsert=True)`: un retry di Spark non duplica gli eventi. Contiene temperatura, CO, smoke al momento dell'evento per analisi forensi.
+Registro delle **transizioni** no-fire → fire, **non** di ogni record con `Fire >= 1`. Un evento viene scritto solo quando un nodo passa da `Fire = 0` (o `null`, mai visto prima) a `Fire >= 1`: lo stato precedente (`last_fire_value`) è persistito in `node_stats` per nodo. Questo evita di intasare la collezione con migliaia di righe per i nodi strutturalmente in fire (es. nodo_2, sempre a `Fire = 1`): senza questa logica ogni riga di nodo_2 genererebbe un evento.
+
+La scrittura è idempotente via `ReplaceOne(filter={"node_id": ..., "reading_index": ...}, upsert=True)`: il `reading_index` globale crescente identifica univocamente il messaggio, quindi un retry di Spark sovrascrive l'evento invece di duplicarlo. Ogni documento contiene `fire_value`, `fire_value_prev`, temperatura, CO e smoke al momento della transizione per analisi forensi.
+
+Opzionalmente, se la variabile d'ambiente `ALERT_WEBHOOK_URL` è valorizzata, ogni transizione fire invia anche un **alert HTTP POST** verso l'endpoint configurato (es. webhook.site, Slack, Discord). L'invio avviene in un **thread daemon separato**, fuori dal path critico del micro-batch: un endpoint lento o irraggiungibile non può rallentare lo streaming (il trigger è di 5 s). L'alerting è disabilitato lasciando la variabile vuota.
 
 ### 6.7 MongoDB — `agg_per_nodo`
 
@@ -347,15 +355,17 @@ Statistiche cumulative per nodo, aggiornate ogni batch con operatori atomici Mon
 
 ### 7.1 Home Dashboard
 
-Mostra una visione globale della rete:
+Mostra una visione globale della rete (11 pannelli):
 
-- **4 pannelli stato nodo** (stat): contano i record con `is_fire:true OR is_anomaly:true` per ciascun nodo nell'intervallo temporale selezionato. Verde con testo "NO FIRE" se il conteggio è 0, rosso con il numero di eventi se > 0. Nodo_4 mostra sempre "NO FIRE" (nessun sensore fire).
-- **Temperatura nel tempo** (time series): media per nodo, threshold gialla a 30°C e rossa a 35°C
-- **CO nel tempo** (time series): scala lineare, threshold gialla a 50 ppm e rossa a 200 ppm
-- **Smoke nel tempo** (time series separata da CO): scala con 4 decimali, threshold a 0.05/0.10/0.15 ppm. Smoke ha scala 0–0.35 ppm, incompatibile con CO (0–1000 ppm): accorparli renderebbe smoke una riga piatta.
-- **Gas nel tempo**: scala in MOhm
-- **Anomalie per nodo**: conteggio bar chart
-- Link alla dashboard di dettaglio nodo
+- **4 pannelli stato nodo** (stat): leggono il campo `is_fire` dal `node_status_index` (`_id:nodo_X`, ultimo valore). Verde con testo "NO FIRE" se `false`/`null`, rosso "FIRE" se `true`. Nodo_4 mostra sempre "NO FIRE" (nessun sensore fire, `fire = null`).
+- **Temperatura (°C) per Nodo** (time series): media per nodo, threshold gialla a 30°C e rossa a 35°C
+- **CO per Nodo** (time series): scala lineare, threshold gialla a 50 ppm, arancione e rossa più in alto
+- **Smoke (ppm) per Nodo** (time series separata da CO): scala con 4 decimali, threshold a 0.05/0.10/0.15 ppm. Smoke ha scala 0–0.35 ppm, incompatibile con CO (0–1000 ppm): accorparli renderebbe smoke una riga piatta.
+- **Gas (Ohm) per Nodo** (time series): resistenza per nodo; threshold *invertita* (rosso sotto 5 kΩ, verde sopra 10 kΩ) perché un valore basso indica volatili/fumo.
+- **Anomalie (ultimi 15 min)** (stat): conteggio globale dei documenti con `is_anomaly:true` nell'intervallo
+- **Attività Fire nel Tempo per Nodo** (time series): conteggio per nodo dei documenti con `is_fire:true`
+- **Ultimi Eventi Anomali** (table): tabella raw dei documenti con `is_anomaly:true`
+- Link alla dashboard di dettaglio nodo (`IoT Node Detail`)
 
 ### 7.2 Node Detail Dashboard
 
@@ -363,8 +373,9 @@ Dashboard con dropdown `$node` per selezionare il nodo (nodo_1/2/3/4):
 
 - Tutti i parametri del nodo selezionato: temperatura, umidità, pressione, CO, smoke, gas, NO2, IR, UV
 - Stato fire corrente con label NORMAL/FIRE/SPECIAL/N/A
-- 4 pannelli z-score (Temperature, CO, Smoke, Gas) con threshold rossa a 2σ
+- 4 pannelli z-score (Temperature, CO, Smoke, Gas) con threshold **simmetrica** a `+2` e `-2` (z-score firmato: evidenzia sia i picchi sia i crolli)
 - Tabella ultimi 50 record con color coding su `is_anomaly` e `is_fire`
+- **Range storico (Lambda — Batch Layer)**: min/max storici di temperatura, CO, smoke e gas e numero totale di record processati, letti dai campi `running_*` del `node_status_index` (alimentati dalle aggregazioni cumulative di `agg_per_nodo`)
 
 ---
 
@@ -431,9 +442,9 @@ ES richiede che `mem_limit` e `ES_JAVA_OPTS` siano allineati: senza `mem_limit` 
 ### 8.5 Checkpoint e idempotenza
 
 Il checkpoint Spark è su volume Docker `spark_checkpoints:/spark/checkpoints`. Senza volume, un riavvio del container azzera il checkpoint e Spark ri-processa tutta la coda Kafka storica. Tutte le scritture sono idempotenti:
-- MongoDB `raw_readings`: `operationType=replace` + `idFieldList`
+- MongoDB `raw_readings`: `operationType=replace` + `idFieldList=node_id,reading_index`
 - MongoDB `processed_readings`: `ReplaceOne(upsert=True)` con chiave `(node_id, reading_index)`
-- MongoDB `fire_events`: `ReplaceOne(upsert=True)` con chiave `(node_id, ingest_ts)`
+- MongoDB `fire_events`: `ReplaceOne(upsert=True)` con chiave `(node_id, reading_index)`
 - ES `sensors_live_index`: `_id = node_id_reading_index` (upsert via bulk con `_id` esplicito)
 - ES `node_status_index`: upsert con `_id = node_id`
 
