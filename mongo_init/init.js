@@ -13,7 +13,8 @@ function createIfMissing(name) {
 // ── raw_readings: tutti i record inviati dal producer (pre-filtro) ────────────
 createIfMissing("raw_readings");
 db.raw_readings.createIndex({ node_id: 1 });
-db.raw_readings.createIndex({ ingest_ts: 1 });
+// TTL 7 giorni — raw è storico immutabile ma non serve tenerlo per sempre
+db.raw_readings.createIndex({ ingest_ts: 1 }, { expireAfterSeconds: 604800 });
 db.raw_readings.createIndex({ node_id: 1, ingest_ts: 1 });
 // M3: indice unico per deduplicazione — il connettore Spark usa idFieldList=node_id,reading_index
 db.raw_readings.createIndex({ node_id: 1, reading_index: 1 }, { unique: true });
@@ -23,7 +24,8 @@ db.raw_readings.createIndex({ node_id: 1, reading_index: 1 }, { unique: true });
 // Source of truth per rianalisi future senza ripassare da raw_readings + Welford.
 createIfMissing("processed_readings");
 db.processed_readings.createIndex({ node_id: 1 });
-db.processed_readings.createIndex({ ingest_ts: 1 });
+// TTL 3 giorni — si può riprocessare da raw_readings se serve uno storico più lungo
+db.processed_readings.createIndex({ ingest_ts: 1 }, { expireAfterSeconds: 259200 });
 db.processed_readings.createIndex({ node_id: 1, ingest_ts: 1 });
 db.processed_readings.createIndex({ node_id: 1, reading_index: 1 }, { unique: true });
 db.processed_readings.createIndex({ is_anomaly: 1 });
