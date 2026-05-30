@@ -175,6 +175,13 @@ def ensure_node_status_index(es_client: Elasticsearch) -> None:
                 "zscore_CO":             {"type": "float"},
                 "zscore_Smoke":          {"type": "float"},
                 "zscore_Gas":            {"type": "float"},
+                "running_min_temp":      {"type": "float"},
+                "running_max_temp":      {"type": "float"},
+                "running_min_co":        {"type": "float"},
+                "running_max_co":        {"type": "float"},
+                "running_min_smoke":     {"type": "float"},
+                "running_max_smoke":     {"type": "float"},
+                "total_processed":       {"type": "long"},
                 "last_update_ts":        {"type": "date", "format": "strict_date_optional_time"},
             }
         },
@@ -375,15 +382,66 @@ def process_batch(batch_df, batch_id: int) -> None:
     # ── 7. Upsert su ES node_status_index (1 doc per nodo) ───────────────────
     # Per ogni nodo presente nel batch, prendi l'ultima riga (max ingest_ts)
     # e upsertala come documento di stato corrente.
+
+    # Calcola le aggregazioni del batch una sola volta (riusate anche allo step 9)
+    batch_agg_map: dict[str, dict] = {}
+    for agg_row in (batch_clean
+                    .groupBy("node_id")
+                    .agg(
+                        F.count("*").alias("batch_count"),
+                        F.round(F.avg(F.col("Temperature (C)")),  2).alias("batch_avg_temp"),
+                        F.round(F.min(F.col("Temperature (C)")),  2).alias("batch_min_temp"),
+                        F.round(F.max(F.col("Temperature (C)")),  2).alias("batch_max_temp"),
+                        F.round(F.sum(F.col("Temperature (C)")),  4).alias("batch_sum_temp"),
+                        F.round(F.avg(F.col("CO")),                2).alias("batch_avg_co"),
+                        F.round(F.min(F.col("CO")),                2).alias("batch_min_co"),
+                        F.round(F.max(F.col("CO")),                2).alias("batch_max_co"),
+                        F.round(F.sum(F.col("CO")),                4).alias("batch_sum_co"),
+                        F.round(F.avg(F.col("Smoke (ppm)")),       4).alias("batch_avg_smoke"),
+                        F.round(F.min(F.col("Smoke (ppm)")),       4).alias("batch_min_smoke"),
+                        F.round(F.max(F.col("Smoke (ppm)")),       4).alias("batch_max_smoke"),
+                        F.round(F.sum(F.col("Smoke (ppm)")),       4).alias("batch_sum_smoke"),
+                        F.round(F.avg(F.col("Gas (Ohm)")),         2).alias("batch_avg_gas"),
+                        F.round(F.min(F.col("Gas (Ohm)")),         2).alias("batch_min_gas"),
+                        F.round(F.max(F.col("Gas (Ohm)")),         2).alias("batch_max_gas"),
+                        F.round(F.sum(F.col("Gas (Ohm)")),         2).alias("batch_sum_gas"),
+                    )
+                    .collect()):
+        batch_agg_map[agg_row["node_id"]] = agg_row.asDict()
+
+    # Leggi i valori cumulativi già su MongoDB (aggiornati dai batch precedenti)
+    cumulative_agg_map = {
+        d["node_id"]: d
+        for d in db.agg_per_nodo.find(
+            {"node_id": {"$in": list(batch_agg_map.keys())}},
+            {"node_id": 1, "running_min_temp": 1, "running_max_temp": 1,
+             "running_min_co": 1, "running_max_co": 1,
+             "running_min_smoke": 1, "running_max_smoke": 1,
+             "total_processed": 1, "_id": 0}
+        )
+    }
+
     latest_per_node: dict[str, dict] = {}
     for row_dict in enriched_rows:
         nid = row_dict["node_id"]
         if nid not in latest_per_node or row_dict["ingest_ts"] > latest_per_node[nid]["ingest_ts"]:
             latest_per_node[nid] = row_dict
 
+    def _merge_min(a, b):
+        if a is None: return b
+        if b is None: return a
+        return min(a, b)
+
+    def _merge_max(a, b):
+        if a is None: return b
+        if b is None: return a
+        return max(a, b)
+
     status_actions = []
     for nid, rd in latest_per_node.items():
         fire_val = rd.get("Fire")
+        cum = cumulative_agg_map.get(nid, {})
+        ba  = batch_agg_map.get(nid, {})
         status_doc = {
             "node_id":            nid,
             "last_ingest_ts":     rd.get("ingest_ts"),
@@ -402,6 +460,13 @@ def process_batch(batch_df, batch_id: int) -> None:
             "zscore_CO":          rd.get("zscore_CO"),
             "zscore_Smoke":       rd.get("zscore_Smoke"),
             "zscore_Gas":         rd.get("zscore_Gas"),
+            "running_min_temp":   _merge_min(cum.get("running_min_temp"),  ba.get("batch_min_temp")),
+            "running_max_temp":   _merge_max(cum.get("running_max_temp"),  ba.get("batch_max_temp")),
+            "running_min_co":     _merge_min(cum.get("running_min_co"),    ba.get("batch_min_co")),
+            "running_max_co":     _merge_max(cum.get("running_max_co"),    ba.get("batch_max_co")),
+            "running_min_smoke":  _merge_min(cum.get("running_min_smoke"), ba.get("batch_min_smoke")),
+            "running_max_smoke":  _merge_max(cum.get("running_max_smoke"), ba.get("batch_max_smoke")),
+            "total_processed":    (cum.get("total_processed") or 0) + (ba.get("batch_count") or 0),
             "last_update_ts":     datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%S.%f"
             )[:-3] + "Z",
@@ -444,30 +509,8 @@ def process_batch(batch_df, batch_id: int) -> None:
         ], ordered=False)
 
     # ── 9. Rolling stats su MongoDB agg_per_nodo ──────────────────────────────
-    agg_rows = (batch_clean
-                .groupBy("node_id")
-                .agg(
-                    F.count("*").alias("batch_count"),
-                    F.round(F.avg(F.col("Temperature (C)")),  2).alias("batch_avg_temp"),
-                    F.round(F.min(F.col("Temperature (C)")),  2).alias("batch_min_temp"),
-                    F.round(F.max(F.col("Temperature (C)")),  2).alias("batch_max_temp"),
-                    F.round(F.sum(F.col("Temperature (C)")),  4).alias("batch_sum_temp"),
-                    F.round(F.avg(F.col("CO")),                2).alias("batch_avg_co"),
-                    F.round(F.min(F.col("CO")),                2).alias("batch_min_co"),
-                    F.round(F.max(F.col("CO")),                2).alias("batch_max_co"),
-                    F.round(F.sum(F.col("CO")),                4).alias("batch_sum_co"),
-                    F.round(F.avg(F.col("Smoke (ppm)")),       4).alias("batch_avg_smoke"),
-                    F.round(F.min(F.col("Smoke (ppm)")),       4).alias("batch_min_smoke"),
-                    F.round(F.max(F.col("Smoke (ppm)")),       4).alias("batch_max_smoke"),
-                    F.round(F.sum(F.col("Smoke (ppm)")),       4).alias("batch_sum_smoke"),
-                    F.round(F.avg(F.col("Gas (Ohm)")),         2).alias("batch_avg_gas"),
-                    F.round(F.min(F.col("Gas (Ohm)")),         2).alias("batch_min_gas"),
-                    F.round(F.max(F.col("Gas (Ohm)")),         2).alias("batch_max_gas"),
-                    F.round(F.sum(F.col("Gas (Ohm)")),         2).alias("batch_sum_gas"),
-                )
-                .collect())
-
-    for agg in agg_rows:
+    # Riusa batch_agg_map calcolato allo step 7 — nessuna seconda groupBy su Spark
+    for agg in batch_agg_map.values():
         db.agg_per_nodo.update_one(
             {"node_id": agg["node_id"]},
             {
