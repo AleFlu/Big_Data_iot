@@ -2,7 +2,10 @@ FROM apache/spark:3.5.3-scala2.12-java17-python3-ubuntu
 
 USER root
 
-RUN pip install --no-cache-dir elasticsearch==7.17.9 pymongo==4.6.3
+# Dipendenze Python dalla single source of truth requirements.txt
+# (elasticsearch, pymongo, requests) — evita drift tra requirements e immagine
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Download Kafka and MongoDB connector JARs via Maven (curl) at build time
 # Avoids Spark's broken --packages + Python script NPE on ARM64/Spark 3.5.3

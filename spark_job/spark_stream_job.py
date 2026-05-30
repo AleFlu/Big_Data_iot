@@ -89,27 +89,34 @@ SENSOR_SCHEMA = StructType([
     StructField("ingest_ts",       StringType(),  True),   # ISO8601 UTC dal producer
 ])
 
-# ── Module-level singletons ───────────────────────────────────────────────────
-_es_client    = None
-_mongo_client = None
+# ── Connessioni per-processo ──────────────────────────────────────────────────
+# Cache dei client in un dict (non variabili globali "nude"): un MongoClient o
+# un Elasticsearch contiene un threading.Lock NON serializzabile. Se questi
+# oggetti finissero nei globali del modulo, cloudpickle proverebbe a serializzarli
+# quando spedisce la closure di foreachPartition ai worker → PicklingError.
+# Tenendoli in un dict popolato lazy DENTRO ogni processo (driver o executor),
+# ogni JVM/Python worker apre le proprie connessioni e la closure resta pulita.
+_CONN: dict = {}
 
 
 def get_es_client() -> Elasticsearch:
-    """Singleton ES client; crea entrambi gli indici al primo accesso."""
-    global _es_client
-    if _es_client is None:
-        _es_client = Elasticsearch(f"http://{ES_HOST}:{ES_PORT}")
-        ensure_es_index(_es_client)
-        ensure_node_status_index(_es_client)
-    return _es_client
+    """Client ES per il processo corrente; crea gli indici al primo accesso."""
+    es = _CONN.get("es")
+    if es is None:
+        es = Elasticsearch(f"http://{ES_HOST}:{ES_PORT}")
+        ensure_es_index(es)
+        ensure_node_status_index(es)
+        _CONN["es"] = es
+    return es
 
 
 def get_mongo_db():
-    """Singleton MongoClient; restituisce il database sensor_data."""
-    global _mongo_client
-    if _mongo_client is None:
-        _mongo_client = MongoClient(MONGO_URI)
-    return _mongo_client["sensor_data"]
+    """MongoClient per il processo corrente; restituisce il database sensor_data."""
+    client = _CONN.get("mongo")
+    if client is None:
+        client = MongoClient(MONGO_URI)
+        _CONN["mongo"] = client
+    return client["sensor_data"]
 
 
 def _safe_create_index(es_client: Elasticsearch, index: str, body: dict) -> None:
@@ -409,7 +416,7 @@ def _enrich_and_persist_node(node_id: str, rows: list, db, es) -> dict:
         {"node_id": node_id},
         {"running_min_temp": 1, "running_max_temp": 1, "running_min_co": 1,
          "running_max_co": 1, "running_min_smoke": 1, "running_max_smoke": 1,
-         "running_min_gas": 1, "running_max_gas": 1, "_id": 0}
+         "running_min_gas": 1, "running_max_gas": 1, "total_processed": 1, "_id": 0}
     ) or {}
     fire_val = rd.get("Fire")
     status_doc = {
@@ -529,7 +536,11 @@ def process_batch(batch_df, batch_id: int) -> None:
     # groupBy nativo Spark (distribuito) + update atomici sul driver. Resta sul
     # driver perché aggrega l'intero batch e alimenta i running_min/max che lo
     # step 3 del batch SUCCESSIVO leggerà per il node_status_index.
-    db = get_mongo_db()
+    # Client Mongo LOCALE (non get_mongo_db()): tenere il client fuori dai globali
+    # del modulo evita che cloudpickle lo catturi quando serializza la closure di
+    # foreachPartition al batch successivo (un MongoClient contiene un thread.lock).
+    db_client = MongoClient(MONGO_URI)
+    db = db_client["sensor_data"]
     batch_agg_map: dict[str, dict] = {}
     for agg_row in (batch_clean
                     .groupBy("node_id")
@@ -610,6 +621,9 @@ def process_batch(batch_df, batch_id: int) -> None:
     # Libera la cache del batch filtrato: senza unpersist le copie cache si
     # accumulerebbero in memoria executor tra un micro-batch e l'altro.
     batch_clean.unpersist()
+
+    # Chiudi il client Mongo locale del driver (aperto per lo step 4).
+    db_client.close()
 
 
 def main():
