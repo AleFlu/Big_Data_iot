@@ -1,4 +1,5 @@
 import os
+import threading
 from datetime import datetime, timezone
 
 import requests
@@ -33,9 +34,15 @@ GAS_MAX = 1_000_000
 # nodo_3 fire=1/2 raggiunge CO fino a 993 ppm; baseline normale ~1-5 ppm.
 # Smoke baseline ~0.01-0.04; durante eventi fire nodo_2 arriva a 0.18.
 # Temperatura: range normale 20-35°C, sopra 40°C segnale di calore anomalo.
-CO_ANOMALY_THRESHOLD    = 50.0   # ppm — >50 indica combustione (baseline <10)
-SMOKE_ANOMALY_THRESHOLD = 0.08   # ppm — >0.08 è sopra il doppio del max baseline
-TEMP_ANOMALY_THRESHOLD  = 35.0   # °C  — >35 allineato alla soglia orange Grafana
+# Gas (resistenza Ohm): cala in presenza di gas combusti; baseline ~10k-200k Ohm.
+# Una caduta sotto 5k Ohm indica concentrazione anomala di volatili (fumo/gas).
+CO_ANOMALY_THRESHOLD    = 50.0     # ppm — >50 indica combustione (baseline <10)
+SMOKE_ANOMALY_THRESHOLD = 0.08     # ppm — >0.08 è sopra il doppio del max baseline
+TEMP_ANOMALY_THRESHOLD  = 35.0     # °C  — >35 allineato alla soglia orange Grafana
+GAS_ANOMALY_THRESHOLD   = 5000.0   # Ohm — <5000 segnala alta concentrazione di volatili
+
+# Soglia z-score oltre la quale un sensore è considerato anomalo (in valore assoluto)
+ZSCORE_THRESHOLD = 2.0
 
 # Campi usati per z-score (identici al notebook)
 ANOMALY_SENSORS = [
@@ -183,6 +190,8 @@ def ensure_node_status_index(es_client: Elasticsearch) -> None:
                 "running_max_co":        {"type": "float"},
                 "running_min_smoke":     {"type": "float"},
                 "running_max_smoke":     {"type": "float"},
+                "running_min_gas":       {"type": "float"},
+                "running_max_gas":       {"type": "float"},
                 "total_processed":       {"type": "long"},
                 "last_update_ts":        {"type": "date", "format": "strict_date_optional_time"},
             }
@@ -212,6 +221,34 @@ def _fire_state_label(fire_val) -> str:
     if fire_val == 1:
         return "FIRE"
     return "SPECIAL"     # fire_val == 2 (nodo_3)
+
+
+def _send_fire_alerts_async(fire_docs: list[dict]) -> None:
+    """
+    Invia gli alert webhook in un thread daemon separato — best-effort.
+    Non deve mai bloccare il micro-batch Spark: un endpoint lento o irraggiungibile
+    farebbe sforare il trigger di 5s e accumulare ritardo nello streaming.
+    """
+    if not ALERT_WEBHOOK_URL or not fire_docs:
+        return
+
+    def _worker(docs: list[dict]) -> None:
+        for d in docs:
+            try:
+                payload = {
+                    "node_id":         d["node_id"],
+                    "fire_value":      d["fire_value"],
+                    "fire_value_prev": d["fire_value_prev"],
+                    "ingest_ts":       d["ingest_ts"].isoformat(),
+                    "temperature_c":   d.get("temperature_c"),
+                    "co":              d.get("co"),
+                    "smoke_ppm":       d.get("smoke_ppm"),
+                }
+                requests.post(ALERT_WEBHOOK_URL, json=payload, timeout=5)
+            except Exception as exc:
+                print(f"[WARN] webhook alert fallito per {d['node_id']}: {exc}")
+
+    threading.Thread(target=_worker, args=(fire_docs,), daemon=True).start()
 
 
 def welford_update(stats: dict, short: str, val: float) -> tuple[float, float, float]:
@@ -292,26 +329,34 @@ def process_batch(batch_df, batch_id: int) -> None:
             stats[f"{short}_mean"]  = mean
             stats[f"{short}_m2"]    = m2
             std    = (m2 / (n - 1)) ** 0.5 if n > 1 else 0.0
-            zscore = round(abs(val - mean) / std, 3) if std > 0 else 0.0
+            # Z-score firmato: positivo per picchi sopra la media, negativo sotto.
+            # Permette di distinguere un'impennata da un crollo (es. guasto sensore)
+            # nei pannelli Grafana. La detection usa il valore assoluto (vedi sotto).
+            zscore = round((val - mean) / std, 3) if std > 0 else 0.0
             row_dict[f"zscore_{short}"] = zscore
 
+        # Anomalia z-score: scatta sul valore assoluto, in entrambe le direzioni.
         anomaly_flags = [
             short for _, short in ANOMALY_SENSORS
-            if (row_dict.get(f"zscore_{short}") or 0.0) > 2.0
+            if abs(row_dict.get(f"zscore_{short}") or 0.0) > ZSCORE_THRESHOLD
         ]
         # Soglie assolute: scattano indipendentemente dallo z-score.
-        # Utili nelle prime letture (Welford ha poca storia) e quando
-        # tutti i valori sono alti (z-score basso ma valore pericoloso).
+        # Utili nelle prime letture (Welford ha poca storia, std=0 → z-score=0) e
+        # quando tutti i valori sono alti (z-score basso ma valore pericoloso).
+        # Coprono tutti e 4 i sensori per non lasciare scoperto il warm-up.
         # Usano gli stessi nomi dei flag z-score per coerenza nei filtri Grafana.
         co_val    = row_dict.get("CO")
         smoke_val = row_dict.get("Smoke (ppm)")
         temp_val  = row_dict.get("Temperature (C)")
+        gas_val   = row_dict.get("Gas (Ohm)")
         if co_val    is not None and co_val    > CO_ANOMALY_THRESHOLD    and "CO"          not in anomaly_flags:
             anomaly_flags.append("CO")
         if smoke_val is not None and smoke_val > SMOKE_ANOMALY_THRESHOLD and "Smoke"       not in anomaly_flags:
             anomaly_flags.append("Smoke")
         if temp_val  is not None and temp_val  > TEMP_ANOMALY_THRESHOLD  and "Temperature" not in anomaly_flags:
             anomaly_flags.append("Temperature")
+        if gas_val   is not None and gas_val   < GAS_ANOMALY_THRESHOLD   and "Gas"         not in anomaly_flags:
+            anomaly_flags.append("Gas")
 
         row_dict["is_anomaly"]      = len(anomaly_flags) > 0
         row_dict["anomaly_sensors"] = ", ".join(anomaly_flags)
@@ -431,6 +476,7 @@ def process_batch(batch_df, batch_id: int) -> None:
             {"node_id": 1, "running_min_temp": 1, "running_max_temp": 1,
              "running_min_co": 1, "running_max_co": 1,
              "running_min_smoke": 1, "running_max_smoke": 1,
+             "running_min_gas": 1, "running_max_gas": 1,
              "total_processed": 1, "_id": 0}
         )
     }
@@ -470,6 +516,8 @@ def process_batch(batch_df, batch_id: int) -> None:
             "running_max_co":     _merge_max(cum.get("running_max_co"),    ba.get("batch_max_co")),
             "running_min_smoke":  _merge_min(cum.get("running_min_smoke"), ba.get("batch_min_smoke")),
             "running_max_smoke":  _merge_max(cum.get("running_max_smoke"), ba.get("batch_max_smoke")),
+            "running_min_gas":    _merge_min(cum.get("running_min_gas"),   ba.get("batch_min_gas")),
+            "running_max_gas":    _merge_max(cum.get("running_max_gas"),   ba.get("batch_max_gas")),
             "total_processed":    (cum.get("total_processed") or 0) + (ba.get("batch_count") or 0),
             "last_update_ts":     datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%S.%f"
@@ -512,21 +560,8 @@ def process_batch(batch_df, batch_id: int) -> None:
             for d in fire_docs
         ], ordered=False)
 
-        if ALERT_WEBHOOK_URL:
-            for d in fire_docs:
-                try:
-                    payload = {
-                        "node_id":        d["node_id"],
-                        "fire_value":     d["fire_value"],
-                        "fire_value_prev":d["fire_value_prev"],
-                        "ingest_ts":      d["ingest_ts"].isoformat(),
-                        "temperature_c":  d.get("temperature_c"),
-                        "co":             d.get("co"),
-                        "smoke_ppm":      d.get("smoke_ppm"),
-                    }
-                    requests.post(ALERT_WEBHOOK_URL, json=payload, timeout=5)
-                except Exception as exc:
-                    print(f"[WARN] webhook alert fallito per {d['node_id']}: {exc}")
+        # Alert webhook best-effort, fuori dal path critico del micro-batch.
+        _send_fire_alerts_async(fire_docs)
 
     # ── 9. Rolling stats su MongoDB agg_per_nodo ──────────────────────────────
     # Riusa batch_agg_map calcolato allo step 7 — nessuna seconda groupBy su Spark

@@ -8,7 +8,7 @@ datasources:
     database: sensors_live_index
     jsonData:
       flavor: elasticsearch
-      version: "7.10.0"
+      version: "7.17.0"
       timeField: ingest_ts
       maxConcurrentShardRequests: 5
       logMessageField: ""
@@ -23,7 +23,7 @@ datasources:
     database: node_status_index
     jsonData:
       flavor: elasticsearch
-      version: "7.10.0"
+      version: "7.17.0"
       timeField: last_update_ts
       maxConcurrentShardRequests: 5
     isDefault: false

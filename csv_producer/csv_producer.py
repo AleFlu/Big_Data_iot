@@ -13,9 +13,19 @@ DELAY_MS  = int(os.environ.get("PRODUCER_DELAY_MS", "500"))
 LOOP      = os.environ.get("LOOP_FOREVER", "true").lower() == "true"
 NODE_ID   = os.environ["NODE_ID"]    # "nodo_1" | "nodo_2" | "nodo_3" | "nodo_4"
 CSV_PATH  = os.environ["CSV_PATH"]   # path al CSV di questo nodo
-# Partizione esplicita: evita collisioni di hash murmur2 (nodo_1 e nodo_4 collidono sulla stessa partizione)
-_part_env  = os.environ.get("KAFKA_PARTITION", "")
-PARTITION  = int(_part_env) if _part_env.isdigit() else None
+# Partizione esplicita: evita collisioni di hash murmur2 (nodo_1 e nodo_4 collidono
+# sulla stessa partizione). Se non settata, Kafka usa l'hash della chiave (node_id)
+# e due nodi diversi possono finire sulla stessa partizione → ordine non garantito
+# per nodo. Avvisiamo esplicitamente invece di fallire silenziosamente.
+_part_env = os.environ.get("KAFKA_PARTITION", "").strip()
+if _part_env.isdigit():
+    PARTITION = int(_part_env)
+else:
+    PARTITION = None
+    print(
+        f"[WARN] KAFKA_PARTITION non impostata per {NODE_ID}: i messaggi saranno "
+        f"instradati per hash della chiave. Possibili collisioni di partizione tra nodi."
+    )
 
 NUMERIC_FIELDS = [
     "Temperature (C)", "Humidity (%)", "Pressure (hPA)", "Gas (Ohm)",
