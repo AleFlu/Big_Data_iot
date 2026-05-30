@@ -200,18 +200,6 @@ def ensure_node_status_index(es_client: Elasticsearch) -> None:
     _safe_create_index(es_client, ES_STATUS_INDEX, mapping)
 
 
-def _merge_min(a, b):
-    if a is None: return b
-    if b is None: return a
-    return min(a, b)
-
-
-def _merge_max(a, b):
-    if a is None: return b
-    if b is None: return a
-    return max(a, b)
-
-
 def _fire_state_label(fire_val) -> str:
     """Mappa il valore Fire intero a una label leggibile."""
     if fire_val is None:
@@ -266,57 +254,25 @@ def welford_update(stats: dict, short: str, val: float) -> tuple[float, float, f
     return n, mean, m2
 
 
-def process_batch(batch_df, batch_id: int) -> None:
+def _enrich_and_persist_node(node_id: str, rows: list, db, es) -> dict:
     """
-    Callback foreachBatch — pipeline completa:
-      1. Scrivi raw su MongoDB raw_readings
-      2. Filtra outlier (CO > 1000 o Gas > 1M)
-      3. Z-score Welford per 4 sensori
-      4. Arricchimento: is_fire, fire_state_label
-      5. Scrivi su MongoDB processed_readings (batch layer — dati arricchiti)
-      6. Scrivi su ES sensors_live_index (serving layer — time-series)
-      7. Upsert su ES node_status_index (stato corrente per nodo)
-      8. Scrivi fire_events su MongoDB (solo transizioni no-fire → fire)
-      9. Rolling stats su MongoDB agg_per_nodo
+    Logica per-nodo eseguita SUI WORKER (una partizione = un nodo).
+
+    Riceve tutte le righe (ordinate per reading_index) di un singolo nodo,
+    applica Welford + z-score + arricchimento fire e scrive i sink per-nodo:
+    processed_readings, sensors_live_index, node_stats, fire_events,
+    node_status_index. Restituisce un piccolo dict di conteggi per il log.
+
+    Perché qui e non sul driver: lo stato Welford è seriale PER NODO, e con
+    1 partizione = 1 nodo questa funzione è completamente isolata. Nodi diversi
+    girano in parallelo su worker diversi → niente collect() sul driver.
     """
-    if batch_df.isEmpty():
-        return
-
-    # ── 1. Raw write su MongoDB ───────────────────────────────────────────────
-    (batch_df.write
-     .format("mongodb")
-     .option("connection.uri", MONGO_URI)
-     .option("collection", "raw_readings")
-     .option("idFieldList", "node_id,reading_index")
-     .option("operationType", "replace")
-     .mode("append")
-     .save())
-
-    # ── 2. Filtro outlier ─────────────────────────────────────────────────────
-    batch_clean = batch_df.filter(
-        (F.col("CO") < CO_MAX) &
-        (F.col("Gas (Ohm)") < GAS_MAX)
-    )
-    rows = batch_clean.collect()
-    if not rows:
-        return
-
-    # ── 3. Z-score Welford ────────────────────────────────────────────────────
-    db = get_mongo_db()
-
-    node_ids_in_batch = list({row["node_id"] for row in rows})
-    node_stats_map = {
-        s["node_id"]: s
-        for s in db.node_stats.find({"node_id": {"$in": node_ids_in_batch}})
-    }
-    for nid in node_ids_in_batch:
-        if nid not in node_stats_map:
-            node_stats_map[nid] = {"node_id": nid}
+    # Stato Welford del nodo dal batch precedente (o vuoto al primo avvio)
+    stats = db.node_stats.find_one({"node_id": node_id}) or {"node_id": node_id}
+    stats.pop("_id", None)
 
     enriched_rows = []
     for row in rows:
-        node     = row["node_id"]
-        stats    = node_stats_map[node]
         row_dict = row.asDict()
 
         for col_name, short in ANOMALY_SENSORS:
@@ -361,7 +317,7 @@ def process_batch(batch_df, batch_id: int) -> None:
         row_dict["is_anomaly"]      = len(anomaly_flags) > 0
         row_dict["anomaly_sensors"] = ", ".join(anomaly_flags)
 
-        # ── 4. Arricchimento fire ─────────────────────────────────────────────
+        # ── Arricchimento fire ────────────────────────────────────────────────
         fire_val  = row_dict.get("Fire")
         last_fire = stats.get("last_fire_value")   # None = nodo mai visto prima
         # Transizione: nodo passa da no-fire (None o 0) a fire (>=1)
@@ -374,25 +330,19 @@ def process_batch(batch_df, batch_id: int) -> None:
         row_dict["is_fire_transition"] = is_transition
         row_dict["fire_value_prev"]    = int(last_fire) if last_fire is not None else 0
         row_dict["fire_state_label"]   = _fire_state_label(fire_val)
-        # Aggiorna last_fire_value per le righe successive dello stesso nodo nel batch
+        # Aggiorna last_fire_value per le righe successive dello stesso nodo
         if fire_val is not None:
             stats["last_fire_value"] = fire_val
 
         enriched_rows.append(row_dict)
 
-    # Bulk write statistiche Welford aggiornate
-    for nid, stats in node_stats_map.items():
-        stats.pop("_id", None)
-    db.node_stats.bulk_write([
-        ReplaceOne({"node_id": nid}, stats, upsert=True)
-        for nid, stats in node_stats_map.items()
-    ])
+    if not enriched_rows:
+        return {"node_id": node_id, "count": 0, "fire": 0, "anomaly": 0}
 
-    # ── 5. Scrivi su MongoDB processed_readings (dati arricchiti, layer batch) ──
-    # Source of truth per rianalisi future: contiene i dati post-filtro con
-    # z-score, flag anomalia e fire_state_label — non ricalcolabili da raw_readings
-    # senza rieseguire Welford dall'inizio. Separazione Lambda: raw = immutabile,
-    # processed = elaborato, ES = serving layer per query veloci.
+    # ── Persisti stato Welford aggiornato (upsert atomico per node_id) ─────────
+    db.node_stats.replace_one({"node_id": node_id}, stats, upsert=True)
+
+    # ── processed_readings (batch layer — dati arricchiti) ─────────────────────
     processed_docs = []
     for row_dict in enriched_rows:
         doc = {k: v for k, v in row_dict.items()
@@ -402,18 +352,13 @@ def process_batch(batch_df, batch_id: int) -> None:
         doc["is_anomaly"] = bool(doc.get("is_anomaly", False))
         doc["is_fire"]    = bool(doc.get("is_fire", False))
         processed_docs.append(doc)
+    db.processed_readings.bulk_write([
+        ReplaceOne({"node_id": d["node_id"], "reading_index": d["reading_index"]},
+                   d, upsert=True)
+        for d in processed_docs
+    ], ordered=False)
 
-    if processed_docs:
-        db.processed_readings.bulk_write([
-            ReplaceOne(
-                {"node_id": d["node_id"], "reading_index": d["reading_index"]},
-                d, upsert=True
-            )
-            for d in processed_docs
-        ], ordered=False)
-
-    # ── 6. Scrivi su ES sensors_live_index (serving layer) ───────────────────
-    es = get_es_client()
+    # ── sensors_live_index (serving layer — time-series) ───────────────────────
     actions = []
     for row_dict in enriched_rows:
         doc = {}
@@ -430,19 +375,161 @@ def process_batch(batch_df, batch_id: int) -> None:
             "_id":    f"{doc.get('node_id', '')}_{doc.get('reading_index', '')}",
             "_source": doc,
         })
+    _, errors = helpers.bulk(es, actions, chunk_size=500,
+                             raise_on_error=False, raise_on_exception=True)
+    if errors:
+        print(f"[WARN] sensors_live bulk ({node_id}): {len(errors)} falliti")
 
-    if actions:
-        success, errors = helpers.bulk(
-            es, actions, chunk_size=500, raise_on_error=False, raise_on_exception=True
-        )
-        if errors:
-            print(f"[WARN] sensors_live bulk: {len(errors)} failed in batch {batch_id}")
+    # ── fire_events su MongoDB (solo transizioni no-fire → fire) ───────────────
+    fire_rows = [r for r in enriched_rows if r.get("is_fire_transition")]
+    if fire_rows:
+        fire_docs = [{
+            "node_id":         rd["node_id"],
+            "reading_index":   rd.get("reading_index"),
+            "fire_value":      int(rd["Fire"]),
+            "fire_value_prev": rd.get("fire_value_prev", 0),
+            "ingest_ts":       datetime.fromisoformat(rd["ingest_ts"].replace("Z", "+00:00")),
+            "temperature_c":   rd.get("Temperature (C)"),
+            "co":              rd.get("CO"),
+            "smoke_ppm":       rd.get("Smoke (ppm)"),
+        } for rd in fire_rows]
+        db.fire_events.bulk_write([
+            ReplaceOne({"node_id": d["node_id"], "reading_index": d.get("reading_index")},
+                       d, upsert=True)
+            for d in fire_docs
+        ], ordered=False)
+        # Alert webhook best-effort, fuori dal path critico del micro-batch.
+        _send_fire_alerts_async(fire_docs)
 
-    # ── 7. Upsert su ES node_status_index (1 doc per nodo) ───────────────────
-    # Per ogni nodo presente nel batch, prendi l'ultima riga (max ingest_ts)
-    # e upsertala come documento di stato corrente.
+    # ── node_status_index: ultima riga del nodo (max reading_index) ────────────
+    # I running_min/max sono già su agg_per_nodo (aggiornato dal driver, step 9
+    # del batch PRECEDENTE). Li leggiamo qui per riportarli nel doc di stato.
+    rd = max(enriched_rows, key=lambda r: r.get("reading_index", 0))
+    cum = db.agg_per_nodo.find_one(
+        {"node_id": node_id},
+        {"running_min_temp": 1, "running_max_temp": 1, "running_min_co": 1,
+         "running_max_co": 1, "running_min_smoke": 1, "running_max_smoke": 1,
+         "running_min_gas": 1, "running_max_gas": 1, "_id": 0}
+    ) or {}
+    fire_val = rd.get("Fire")
+    status_doc = {
+        "node_id":            node_id,
+        "last_ingest_ts":     rd.get("ingest_ts"),
+        "temperature_c":      rd.get("Temperature (C)"),
+        "humidity_pct":       rd.get("Humidity (%)"),
+        "pressure_hpa":       rd.get("Pressure (hPA)"),
+        "gas_ohm":            rd.get("Gas (Ohm)"),
+        "co":                 rd.get("CO"),
+        "smoke_ppm":          rd.get("Smoke (ppm)"),
+        "fire":               int(fire_val) if fire_val is not None else None,
+        "is_fire":            bool(fire_val is not None and fire_val >= 1),
+        "fire_state_label":   _fire_state_label(fire_val),
+        "is_anomaly_current": bool(rd.get("is_anomaly", False)),
+        "anomaly_sensors":    rd.get("anomaly_sensors", ""),
+        "zscore_Temperature": rd.get("zscore_Temperature"),
+        "zscore_CO":          rd.get("zscore_CO"),
+        "zscore_Smoke":       rd.get("zscore_Smoke"),
+        "zscore_Gas":         rd.get("zscore_Gas"),
+        "running_min_temp":   cum.get("running_min_temp"),
+        "running_max_temp":   cum.get("running_max_temp"),
+        "running_min_co":     cum.get("running_min_co"),
+        "running_max_co":     cum.get("running_max_co"),
+        "running_min_smoke":  cum.get("running_min_smoke"),
+        "running_max_smoke":  cum.get("running_max_smoke"),
+        "running_min_gas":    cum.get("running_min_gas"),
+        "running_max_gas":    cum.get("running_max_gas"),
+        "total_processed":    cum.get("total_processed"),
+        "last_update_ts":     datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+    }
+    # helpers.bulk (non es.index): API stabile su elasticsearch-py 7.17 e coerente
+    # con le altre scritture ES. _id = node_id → un solo documento per nodo (upsert).
+    helpers.bulk(es, [{"_index": ES_STATUS_INDEX, "_id": node_id, "_source": status_doc}],
+                 raise_on_error=False, raise_on_exception=True)
 
-    # Calcola le aggregazioni del batch una sola volta (riusate anche allo step 9)
+    return {
+        "node_id": node_id,
+        "count":   len(enriched_rows),
+        "fire":    sum(1 for r in enriched_rows if r.get("is_fire")),
+        "anomaly": sum(1 for r in enriched_rows if r["is_anomaly"]),
+    }
+
+
+def process_partition(rows_iter):
+    """
+    Callback foreachPartition — gira SUL WORKER, una volta per partizione.
+
+    Con il partizionamento Kafka 1 nodo = 1 partizione, ogni partizione contiene
+    le righe di un solo nodo. Le raggruppa per node_id (difensivo: se più nodi
+    finissero nella stessa partizione, restano comunque corretti), ordina per
+    reading_index — Spark NON garantisce l'ordine dopo il filter, ma Welford lo
+    richiede — e delega a _enrich_and_persist_node. Le connessioni Mongo/ES sono
+    aperte qui, una per partizione (non riusabili dal driver).
+    """
+    by_node: dict[str, list] = {}
+    for row in rows_iter:
+        by_node.setdefault(row["node_id"], []).append(row)
+    if not by_node:
+        return
+
+    db = get_mongo_db()
+    es = get_es_client()
+    for node_id, rows in by_node.items():
+        # Welford è seriale: serve l'ordine di lettura corretto dentro la partizione
+        rows.sort(key=lambda r: r["reading_index"] if r["reading_index"] is not None else 0)
+        _enrich_and_persist_node(node_id, rows, db, es)
+
+
+def process_batch(batch_df, batch_id: int) -> None:
+    """
+    Callback foreachBatch — orchestrazione del micro-batch:
+      1. Scrivi raw su MongoDB raw_readings (nativo Spark, distribuito)
+      2. Filtra outlier (CO > 1000 o Gas > 1M) (nativo Spark, distribuito)
+      3. Arricchimento per-nodo SUI WORKER via foreachPartition:
+         z-score Welford, flag fire/anomalia, scrittura di processed_readings,
+         sensors_live_index, node_stats, fire_events, node_status_index
+      4. Rolling stats cumulative su MongoDB agg_per_nodo (groupBy nativo + driver)
+
+    La logica stateful per-nodo (step 3) è distribuita sugli executor: con
+    1 partizione = 1 nodo i nodi vengono elaborati in parallelo. Sul driver
+    restano solo le operazioni che richiedono una vista globale o sono già
+    espresse come trasformazioni native Spark.
+    """
+    if batch_df.isEmpty():
+        return
+
+    # ── 1. Raw write su MongoDB (nativo Spark, gira sui worker) ────────────────
+    (batch_df.write
+     .format("mongodb")
+     .option("connection.uri", MONGO_URI)
+     .option("collection", "raw_readings")
+     .option("idFieldList", "node_id,reading_index")
+     .option("operationType", "replace")
+     .mode("append")
+     .save())
+
+    # ── 2. Filtro outlier (nativo Spark, lazy, gira sui worker) ────────────────
+    # cache(): batch_clean è usato due volte (foreachPartition allo step 3 e
+    # groupBy allo step 4). Senza cache Spark ricalcolerebbe filtro+parsing due
+    # volte; con cache il batch filtrato è materializzato una sola volta.
+    batch_clean = batch_df.filter(
+        (F.col("CO") < CO_MAX) &
+        (F.col("Gas (Ohm)") < GAS_MAX)
+    ).cache()
+
+    # ── 3. Arricchimento per-nodo SUI WORKER ──────────────────────────────────
+    # Ripartiziona per node_id così ogni partizione contiene un solo nodo e
+    # gli executor lavorano in parallelo. foreachPartition non fa collect():
+    # i dati arricchiti non tornano mai al driver.
+    (batch_clean
+     .repartition(F.col("node_id"))
+     .foreachPartition(process_partition))
+
+    # ── 4. Rolling stats cumulative su MongoDB agg_per_nodo ────────────────────
+    # groupBy nativo Spark (distribuito) + update atomici sul driver. Resta sul
+    # driver perché aggrega l'intero batch e alimenta i running_min/max che lo
+    # step 3 del batch SUCCESSIVO leggerà per il node_status_index.
+    db = get_mongo_db()
     batch_agg_map: dict[str, dict] = {}
     for agg_row in (batch_clean
                     .groupBy("node_id")
@@ -468,103 +555,11 @@ def process_batch(batch_df, batch_id: int) -> None:
                     .collect()):
         batch_agg_map[agg_row["node_id"]] = agg_row.asDict()
 
-    # Leggi i valori cumulativi già su MongoDB (aggiornati dai batch precedenti)
-    cumulative_agg_map = {
-        d["node_id"]: d
-        for d in db.agg_per_nodo.find(
-            {"node_id": {"$in": list(batch_agg_map.keys())}},
-            {"node_id": 1, "running_min_temp": 1, "running_max_temp": 1,
-             "running_min_co": 1, "running_max_co": 1,
-             "running_min_smoke": 1, "running_max_smoke": 1,
-             "running_min_gas": 1, "running_max_gas": 1,
-             "total_processed": 1, "_id": 0}
-        )
-    }
-
-    latest_per_node: dict[str, dict] = {}
-    for row_dict in enriched_rows:
-        nid = row_dict["node_id"]
-        if nid not in latest_per_node or row_dict["ingest_ts"] > latest_per_node[nid]["ingest_ts"]:
-            latest_per_node[nid] = row_dict
-
-    status_actions = []
-    for nid, rd in latest_per_node.items():
-        fire_val = rd.get("Fire")
-        cum = cumulative_agg_map.get(nid, {})
-        ba  = batch_agg_map.get(nid, {})
-        status_doc = {
-            "node_id":            nid,
-            "last_ingest_ts":     rd.get("ingest_ts"),
-            "temperature_c":      rd.get("Temperature (C)"),
-            "humidity_pct":       rd.get("Humidity (%)"),
-            "pressure_hpa":       rd.get("Pressure (hPA)"),
-            "gas_ohm":            rd.get("Gas (Ohm)"),
-            "co":                 rd.get("CO"),
-            "smoke_ppm":          rd.get("Smoke (ppm)"),
-            "fire":               int(fire_val) if fire_val is not None else None,
-            "is_fire":            bool(fire_val is not None and fire_val >= 1),
-            "fire_state_label":   _fire_state_label(fire_val),
-            "is_anomaly_current": bool(rd.get("is_anomaly", False)),
-            "anomaly_sensors":    rd.get("anomaly_sensors", ""),
-            "zscore_Temperature": rd.get("zscore_Temperature"),
-            "zscore_CO":          rd.get("zscore_CO"),
-            "zscore_Smoke":       rd.get("zscore_Smoke"),
-            "zscore_Gas":         rd.get("zscore_Gas"),
-            "running_min_temp":   _merge_min(cum.get("running_min_temp"),  ba.get("batch_min_temp")),
-            "running_max_temp":   _merge_max(cum.get("running_max_temp"),  ba.get("batch_max_temp")),
-            "running_min_co":     _merge_min(cum.get("running_min_co"),    ba.get("batch_min_co")),
-            "running_max_co":     _merge_max(cum.get("running_max_co"),    ba.get("batch_max_co")),
-            "running_min_smoke":  _merge_min(cum.get("running_min_smoke"), ba.get("batch_min_smoke")),
-            "running_max_smoke":  _merge_max(cum.get("running_max_smoke"), ba.get("batch_max_smoke")),
-            "running_min_gas":    _merge_min(cum.get("running_min_gas"),   ba.get("batch_min_gas")),
-            "running_max_gas":    _merge_max(cum.get("running_max_gas"),   ba.get("batch_max_gas")),
-            "total_processed":    (cum.get("total_processed") or 0) + (ba.get("batch_count") or 0),
-            "last_update_ts":     datetime.now(timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%S.%f"
-            )[:-3] + "Z",
-        }
-        # Upsert: usa node_id come _id così c'è sempre 1 documento per nodo
-        status_actions.append({
-            "_index":  ES_STATUS_INDEX,
-            "_id":     nid,
-            "_source": status_doc,
-        })
-
-    if status_actions:
-        success, errors = helpers.bulk(
-            es, status_actions, chunk_size=10, raise_on_error=False, raise_on_exception=True
-        )
-        if errors:
-            print(f"[WARN] node_status bulk: {len(errors)} failed in batch {batch_id}")
-
-    # ── 8. Fire events su MongoDB (solo transizioni no-fire → fire) ──────────
-    fire_rows = [r for r in enriched_rows if r.get("is_fire_transition")]
-    if fire_rows:
-        fire_docs = []
-        for rd in fire_rows:
-            fire_docs.append({
-                "node_id":        rd["node_id"],
-                "reading_index":  rd.get("reading_index"),
-                "fire_value":     int(rd["Fire"]),
-                "fire_value_prev": rd.get("fire_value_prev", 0),
-                "ingest_ts":      datetime.fromisoformat(rd["ingest_ts"].replace("Z", "+00:00")),
-                "temperature_c":  rd.get("Temperature (C)"),
-                "co":             rd.get("CO"),
-                "smoke_ppm":      rd.get("Smoke (ppm)"),
-            })
-        db.fire_events.bulk_write([
-            ReplaceOne(
-                {"node_id": d["node_id"], "reading_index": d.get("reading_index")},
-                d, upsert=True
-            )
-            for d in fire_docs
-        ], ordered=False)
-
-        # Alert webhook best-effort, fuori dal path critico del micro-batch.
-        _send_fire_alerts_async(fire_docs)
-
-    # ── 9. Rolling stats su MongoDB agg_per_nodo ──────────────────────────────
-    # Riusa batch_agg_map calcolato allo step 7 — nessuna seconda groupBy su Spark
+    # I running_min/max/sum cumulativi vengono aggiornati qui sul driver con
+    # operatori atomici. Il node_status_index NON viene scritto qui: lo scrive
+    # ogni worker (step 3) leggendo questi running_* — che riflettono i batch
+    # PRECEDENTI. C'è quindi un ritardo di un micro-batch (5 s) sui min/max
+    # mostrati nello stato corrente: accettabile per un cruscotto live.
     for agg in batch_agg_map.values():
         db.agg_per_nodo.update_one(
             {"node_id": agg["node_id"]},
@@ -603,12 +598,18 @@ def process_batch(batch_df, batch_id: int) -> None:
             upsert=True,
         )
 
-    fire_count    = sum(1 for r in enriched_rows if r.get("is_fire"))
-    anomaly_count = sum(1 for r in enriched_rows if r["is_anomaly"])
+    # Nota: i conteggi fire/anomalie sono calcolati sui worker (step 3) e non
+    # tornano al driver (niente collect()). Qui logghiamo il volume del batch
+    # aggregato dalla groupBy; il dettaglio per nodo è nei log degli executor.
+    batch_total = sum(int(a.get("batch_count") or 0) for a in batch_agg_map.values())
     print(
-        f"Batch {batch_id}: {len(enriched_rows)} record, "
-        f"{fire_count} fire, {anomaly_count} anomalie → ES + MongoDB"
+        f"Batch {batch_id}: {batch_total} record su {len(batch_agg_map)} nodi "
+        f"→ arricchimento distribuito sui worker → ES + MongoDB"
     )
+
+    # Libera la cache del batch filtrato: senza unpersist le copie cache si
+    # accumulerebbero in memoria executor tra un micro-batch e l'altro.
+    batch_clean.unpersist()
 
 
 def main():

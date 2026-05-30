@@ -71,7 +71,7 @@ Spark gestisce il processing in modalità **micro-batch** (trigger ogni 5 second
 
 Il sistema usa uno **Spark Standalone Cluster** con 1 Master e 3 Worker, per simulare un deployment distribuito reale. Il driver gira in modalità `client` nel container `spark-job`, separato dai worker. Il checkpoint è su un volume Docker condiviso tra tutti i container Spark, necessario perché in cluster mode il driver scrive il checkpoint su filesystem accessibile anche ai worker.
 
-> Nota sulla distribuzione effettiva del calcolo: a questo volume di dati (≈8 msg/s) l'arricchimento per riga (z-score, flag) viene eseguito sul **driver** dopo un `collect()`, mentre parsing, filtro e aggregazioni `groupBy` girano sui worker. Questa scelta, i suoi limiti e come scalerebbe per volumi reali sono discussi in dettaglio nella **sezione 9**.
+> Nota sulla distribuzione effettiva del calcolo: l'arricchimento stateful per nodo (Welford, z-score, flag) è **distribuito sugli executor** tramite `foreachPartition` con ripartizionamento per `node_id`, senza `collect()` sul driver. Il dettaglio del meccanismo e i percorsi di ulteriore scalabilità sono discussi nella **sezione 9**.
 
 La stessa immagine Docker copre tutti i ruoli (master, worker, driver): la variabile d'ambiente `SPARK_ROLE` fa il dispatch nell'entrypoint.
 
@@ -104,7 +104,7 @@ Grafana è stato scelto al posto di Kibana per:
 
 ### 2.6 Python (kafka-python, elasticsearch-py, pymongo)
 
-Il connettore ES per Spark (`elasticsearch-spark-30`) è incompatibile con Spark 3.5.x a causa di un bug confermato nel Catalyst optimizer (GitHub issue #2210: `NoSuchMethodError`). La soluzione adottata è scrivere su ES direttamente in Python all'interno della callback `foreachBatch`, usando la libreria ufficiale `elasticsearch==7.17.9`. Questo approccio elimina il conflitto JAR ed è pienamente funzionale.
+Il connettore ES per Spark (`elasticsearch-spark-30`) è incompatibile con Spark 3.5.x a causa di un bug confermato nel Catalyst optimizer (GitHub issue #2210: `NoSuchMethodError`). La soluzione adottata è scrivere su ES direttamente in Python con la libreria ufficiale `elasticsearch==7.17.9`, all'interno della logica `foreachBatch`/`foreachPartition` (le scritture time-series e di stato avvengono sugli executor, vedi sezione 9). Questo approccio elimina il conflitto JAR ed è pienamente funzionale.
 
 ---
 
@@ -498,64 +498,51 @@ docker compose up -d grafana mongo-express kafka-ui
 
 ## 9. Distribuzione del calcolo e scalabilità
 
-Questa sezione analizza in modo critico **dove** viene eseguito il calcolo nel cluster Spark, quali parti sono realmente distribuite e quali no, e come il sistema scalerebbe se il volume passasse dagli attuali ≈8 msg/s a ordini di grandezza superiori. È una scelta progettuale consapevole, non un limite accidentale: la documentiamo esplicitamente perché la distribuzione del calcolo è il cuore di un sistema Big Data.
+Questa sezione analizza in modo critico **dove** viene eseguito il calcolo nel cluster Spark, quali parti sono realmente distribuite e come il sistema scalerebbe se il volume passasse dagli attuali ≈8 msg/s a ordini di grandezza superiori. La distribuzione del calcolo è il cuore di un sistema Big Data, quindi è il primo aspetto che documentiamo.
 
 ### 9.1 Cosa gira sui worker e cosa gira sul driver
 
-Il metodo `process_batch(batch_df, batch_id)` invocato da `foreachBatch` contiene due categorie di operazioni con località di esecuzione diversa:
+La pipeline è progettata in modo che **l'intera logica stateful per-nodo sia distribuita sugli executor**, lasciando sul driver solo l'orchestrazione e le aggregazioni che richiedono una vista globale del batch. Il metodo `process_batch(batch_df, batch_id)` invocato da `foreachBatch` orchestra quattro passi:
 
-| Operazione | Dove gira | Distribuito? |
-|------------|-----------|--------------|
-| Parsing JSON (`from_json`) del flusso Kafka | Worker (executor) | ✅ Sì, per partizione |
-| Scrittura `raw_readings` su MongoDB (connettore Spark) | Worker | ✅ Sì, per partizione |
-| Filtro outlier (`.filter(CO < … & Gas < …)`) | Worker | ✅ Sì, lazy |
-| Aggregazioni `groupBy("node_id").agg(...)` (min/max/avg/sum) | Worker + shuffle | ✅ Sì |
-| **`batch_clean.collect()`** | **Driver** | ❌ Raccoglie tutto sul driver |
-| Welford + z-score + arricchimento (`for row in rows`) | **Driver** | ❌ Single-thread Python |
-| Scritture finali su ES e Mongo (Welford, status, fire, agg) | **Driver** | ❌ Dal driver |
+| Passo | Operazione | Dove gira | Distribuito? |
+|-------|-----------|-----------|--------------|
+| 1 | Parsing JSON (`from_json`) + scrittura `raw_readings` (connettore Spark) | Worker (executor) | ✅ Sì, per partizione |
+| 2 | Filtro outlier (`.filter(CO < … & Gas < …)`) + `cache()` | Worker | ✅ Sì, lazy |
+| 3 | **Welford + z-score + arricchimento + scritture** (`processed_readings`, `sensors_live_index`, `node_stats`, `fire_events`, `node_status_index`) via **`foreachPartition`** | **Worker** | ✅ **Sì, per nodo** |
+| 4 | Aggregazioni `groupBy("node_id").agg(...)` + upsert cumulativi `agg_per_nodo` | Worker (groupBy) + Driver (upsert atomici) | ✅ Sì |
 
-In sintesi: **Spark viene usato come consumer Kafka distribuito + motore di parsing/filtro/aggregazione**, mentre la logica di arricchimento riga-per-riga (Welford, z-score, costruzione documenti) viene eseguita sul driver dopo aver materializzato il batch con `collect()`.
+Il punto chiave è il **passo 3**: non c'è alcun `collect()`. La logica di arricchimento riga-per-riga (la parte computazionalmente più pesante) viene eseguita **dentro le partizioni sugli executor**, mai sul driver. I dati arricchiti non tornano mai indietro: ogni worker scrive direttamente sui propri sink.
 
-### 9.2 Perché il calcolo per-riga è sul driver
+### 9.2 Come funziona la distribuzione per partizione
 
-Il motivo è la **natura sequenziale dello stato Welford**. Lo z-score della lettura *N* di un nodo dipende dalla media e varianza aggiornate con le letture *1…N-1* dello stesso nodo. Questa dipendenza ordinata si esprime in modo banale con un ciclo Python sul driver, dove lo stato `{count, mean, m2}` è una semplice variabile aggiornata in sequenza e persistita su MongoDB `node_stats`.
+Il meccanismo si appoggia sull'allineamento tra partizionamento Kafka e partizionamento Spark:
 
-A un volume di **≈8 msg/s** (4 nodi × 2 msg/s) e con `maxOffsetsPerTrigger=200` per partizione, ogni micro-batch contiene al massimo ~800 righe: il driver le elabora in pochi millisecondi e il `collect()` occupa una frazione trascurabile dei 768 MB di RAM disponibili. **A questa scala, eseguire sul driver è la scelta corretta**: il costo di coordinamento e shuffle del calcolo distribuito supererebbe il beneficio (principio KISS, *premature distribution is the root of all evil*).
+1. **`repartition(F.col("node_id"))`** — prima di `foreachPartition`, il batch filtrato viene ripartizionato per `node_id`. Poiché il partizionamento Kafka già garantisce *1 nodo = 1 partizione*, ogni partizione Spark contiene le letture di **un solo nodo**.
+2. **`foreachPartition(process_partition)`** — Spark esegue `process_partition` su ogni executor, in parallelo. Nodo_1 viene elaborato su un worker, nodo_2 su un altro, e così via.
+3. **Ordinamento intra-partizione** — Welford è seriale (lo z-score della lettura *N* dipende dalle letture *1…N-1*). Spark non garantisce l'ordine dopo il `filter`/`repartition`, quindi `process_partition` **riordina le righe per `reading_index`** prima di applicare l'algoritmo. Questo preserva la correttezza statistica.
+4. **Connessioni per executor** — Mongo ed ES vengono aperti *dentro* la funzione di partizione (singleton per processo executor, non riutilizzabili dal driver).
+5. **Robustezza** — `process_partition` raggruppa comunque per `node_id` al suo interno: se per collisione di hash due nodi finissero nella stessa partizione, il risultato resterebbe corretto.
 
-### 9.3 Il limite: perché non scala
+Lo stato Welford resta seriale *all'interno* della partizione (corretto, una partizione = un nodo) ma i nodi sono elaborati **in parallelo su worker diversi**. La persistenza dello stato su MongoDB `node_stats` usa upsert atomici per `node_id`, sicuri anche con scritture concorrenti da executor diversi.
 
-Il `collect()` è il classico **anti-pattern Big Data**: trasferisce l'intero batch nella memoria di un singolo processo (il driver), che diventa così:
+### 9.3 Una conseguenza di progetto: il node_status_index
 
-1. un **collo di bottiglia di throughput** — il calcolo è single-thread, i 3 worker restano in gran parte inattivi durante l'arricchimento;
-2. un **single point of failure di memoria** — con batch da centinaia di migliaia di righe il driver andrebbe in `OutOfMemoryError`.
+Distribuire l'arricchimento ha un effetto sul `node_status_index`. I valori cumulativi `running_min/max` derivano dall'aggregazione globale del batch (passo 4, sul driver), ma il documento di stato per nodo viene scritto nel passo 3 (sui worker). Per non reintrodurre un `collect()`, ogni worker **legge da `agg_per_nodo` i running stat aggiornati dal batch precedente**. Ne consegue un ritardo di un micro-batch (≈5 s) sui soli min/max storici mostrati nelle card di stato — irrilevante per un cruscotto live, e un trade-off esplicito a favore della piena distribuzione.
 
-Se il volume crescesse di 5 ordini di grandezza (es. 800.000 msg/s, scenario IoT industriale reale), questa architettura **non reggerebbe**: il driver saturerebbe e il cluster sarebbe sottoutilizzato.
+### 9.4 Ottimizzazioni di esecuzione
 
-### 9.4 Come si distribuirebbe davvero
+- **`cache()` sul batch filtrato** — `batch_clean` è usato due volte (passo 3 e passo 4). Senza cache Spark rieseguirebbe parsing + filtro per ogni azione; con `cache()` il batch è materializzato una sola volta e liberato con `unpersist()` a fine elaborazione.
+- **`groupBy` nativo invece di ricalcolo** — le statistiche di batch (min/max/avg/sum per nodo) sono calcolate una sola volta con l'API DataFrame distribuita, non in Python.
 
-Esistono tre strade, in ordine crescente di "correttezza Big Data":
+### 9.5 Limiti residui e ulteriori passi di scalabilità
 
-**(a) `foreachPartition` invece di `collect()`** — Poiché il partizionamento Kafka garantisce *1 nodo = 1 partizione*, ogni partizione contiene le letture di un solo nodo, in ordine. Si può quindi spostare il ciclo di arricchimento **dentro le partizioni**, eseguito dai worker:
-```python
-batch_clean.foreachPartition(process_partition)  # gira sull'executor
-```
-Welford resta sequenziale *all'interno* della partizione (corretto, perché una partizione = un nodo), ma nodi diversi vengono elaborati **in parallelo su worker diversi**. È la modifica meno invasiva. L'unica accortezza è la scrittura concorrente dello stato su MongoDB da più executor, già gestita da upsert atomici per `node_id`.
+L'architettura attuale distribuisce il calcolo fino a **N worker = N nodi**: con 4 nodi e 3 worker il parallelismo è pieno. Per scalare ulteriormente:
 
-**(b) `flatMapGroupsWithState` — lo stato distribuito nativo di Spark** — È il pattern *canonico* di Structured Streaming per lo **stato per chiave**:
-```python
-df.groupByKey(lambda r: r.node_id)
-  .flatMapGroupsWithState(outputMode, timeout)(welford_fn)
-```
-Spark mantiene lo stato Welford di ogni `node_id` nel proprio **state store** (con checkpoint e fault tolerance integrati), distribuito sugli executor. Si conserva la semantica *online a memoria costante* dello z-score, ma il calcolo diventa pienamente distribuito e tollerante ai guasti, e la collezione `node_stats` su MongoDB diventa superflua (lo stato vive nel state store di Spark). È la soluzione più pulita e quella attesa in un sistema Big Data di produzione.
-
-**(c) Z-score su finestra con Window functions** — Calcolo di media/std *nativo* in SQL Spark con `Window.partitionBy("node_id")`. Gira interamente sui worker e elimina il `collect()`, ma **cambia la semantica**: lo z-score sarebbe relativo alla finestra del batch, non alla storia completa del nodo. Si perderebbe il carattere "online globale", quindi è adatto solo se si accetta una baseline mobile a breve termine.
-
-### 9.5 Scalabilità degli altri componenti
-
-- **Kafka**: scala aumentando il numero di partizioni del topic. Il modello *1 nodo = 1 partizione* generalizza a *N sensori = N partizioni*, con consumo parallelo proporzionale.
-- **Spark**: scala orizzontalmente aggiungendo worker; con `flatMapGroupsWithState` il parallelismo è limitato dal numero di chiavi distinte (nodi), non dal driver.
-- **Elasticsearch / MongoDB**: oggi single-node per vincoli di RAM del laptop; in produzione diventerebbero cluster con sharding (per `node_id`) e repliche, senza modifiche al codice della pipeline (gli endpoint sono già esternalizzati in variabili d'ambiente).
+- **`flatMapGroupsWithState`** — è il pattern *canonico* di Structured Streaming per lo stato per chiave. Spark manterrebbe lo stato Welford di ogni `node_id` nel proprio **state store** con checkpoint e fault tolerance integrati, rendendo superflua la collezione `node_stats` su MongoDB. È il passo successivo naturale per un numero molto grande di sensori (migliaia di chiavi), dove gestire lo stato su Mongo diventerebbe il collo di bottiglia.
+- **Kafka**: scala aumentando le partizioni del topic. Il modello *1 nodo = 1 partizione* generalizza a *N sensori = N partizioni*, con consumo parallelo proporzionale.
+- **Spark**: scala orizzontalmente aggiungendo worker; il parallelismo è limitato dal numero di chiavi distinte (nodi), non più dal driver.
+- **Elasticsearch / MongoDB**: oggi single-node per i vincoli di RAM del laptop; in produzione diventerebbero cluster con sharding (per `node_id`) e repliche, senza modifiche al codice della pipeline — gli endpoint sono già esternalizzati in variabili d'ambiente.
 
 ### 9.6 Sintesi
 
-L'architettura attuale è **deliberatamente semplice e corretta per il volume del progetto**: usa il cluster Spark per le parti che beneficiano della distribuzione (ingestione, parsing, filtro, aggregazioni) e concentra sul driver la logica stateful sequenziale, dove il costo è trascurabile a questa scala. I percorsi di evoluzione verso il calcolo pienamente distribuito (`foreachPartition`, `flatMapGroupsWithState`) sono identificati e non richiederebbero un cambio di framework — solo una riscrittura mirata del metodo `process_batch`.
+La pipeline usa il cluster Spark in modo coerente con i principi Big Data: ingestione, parsing, filtro e aggregazioni sfruttano le trasformazioni native distribuite, mentre la logica stateful per-nodo è distribuita sugli executor via `foreachPartition` con ripartizionamento per `node_id`. Non c'è `collect()` dei dati nel path di arricchimento, quindi nessun collo di bottiglia né single point of failure di memoria sul driver. Il percorso verso volumi ancora maggiori (`flatMapGroupsWithState` con state store nativo) è identificato e non richiederebbe un cambio di framework.
