@@ -191,6 +191,18 @@ def ensure_node_status_index(es_client: Elasticsearch) -> None:
     _safe_create_index(es_client, ES_STATUS_INDEX, mapping)
 
 
+def _merge_min(a, b):
+    if a is None: return b
+    if b is None: return a
+    return min(a, b)
+
+
+def _merge_max(a, b):
+    if a is None: return b
+    if b is None: return a
+    return max(a, b)
+
+
 def _fire_state_label(fire_val) -> str:
     """Mappa il valore Fire intero a una label leggibile."""
     if fire_val is None:
@@ -428,16 +440,6 @@ def process_batch(batch_df, batch_id: int) -> None:
         nid = row_dict["node_id"]
         if nid not in latest_per_node or row_dict["ingest_ts"] > latest_per_node[nid]["ingest_ts"]:
             latest_per_node[nid] = row_dict
-
-    def _merge_min(a, b):
-        if a is None: return b
-        if b is None: return a
-        return min(a, b)
-
-    def _merge_max(a, b):
-        if a is None: return b
-        if b is None: return a
-        return max(a, b)
 
     status_actions = []
     for nid, rd in latest_per_node.items():
