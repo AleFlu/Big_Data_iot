@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
 
+import requests
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
 from pymongo import MongoClient, ReplaceOne
@@ -21,7 +22,8 @@ MONGO_URI        = os.environ.get("MONGO_URI", "mongodb://mongodb:27017/sensor_d
 ES_HOST          = os.environ.get("ES_HOST", "elasticsearch")
 ES_PORT          = int(os.environ.get("ES_PORT", "9200"))
 ES_INDEX         = os.environ.get("ES_INDEX", "sensors_live_index")
-ES_STATUS_INDEX  = "node_status_index"
+ES_STATUS_INDEX   = "node_status_index"
+ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL", "")  # vuoto = alerting disabilitato
 
 # Soglie di pulizia identiche al notebook (Cell 19)
 CO_MAX  = 1000
@@ -507,6 +509,22 @@ def process_batch(batch_df, batch_id: int) -> None:
             )
             for d in fire_docs
         ], ordered=False)
+
+        if ALERT_WEBHOOK_URL:
+            for d in fire_docs:
+                try:
+                    payload = {
+                        "node_id":        d["node_id"],
+                        "fire_value":     d["fire_value"],
+                        "fire_value_prev":d["fire_value_prev"],
+                        "ingest_ts":      d["ingest_ts"].isoformat(),
+                        "temperature_c":  d.get("temperature_c"),
+                        "co":             d.get("co"),
+                        "smoke_ppm":      d.get("smoke_ppm"),
+                    }
+                    requests.post(ALERT_WEBHOOK_URL, json=payload, timeout=5)
+                except Exception as exc:
+                    print(f"[WARN] webhook alert fallito per {d['node_id']}: {exc}")
 
     # ── 9. Rolling stats su MongoDB agg_per_nodo ──────────────────────────────
     # Riusa batch_agg_map calcolato allo step 7 — nessuna seconda groupBy su Spark

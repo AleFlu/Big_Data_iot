@@ -338,6 +338,7 @@ services:
       ES_INDEX: sensors_live_index
       SPARK_DRIVER_MEMORY: 512m
       SPARK_EXECUTOR_MEMORY: 512m
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
     volumes:
       - spark_checkpoints:/spark/checkpoints
     depends_on:
