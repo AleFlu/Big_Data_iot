@@ -136,6 +136,7 @@ def ensure_es_index(es_client: Elasticsearch) -> None:
                 "smoke_ppm":          {"type": "float"},
                 "fire":               {"type": "integer"},
                 "is_fire":            {"type": "boolean"},
+                "is_fire_transition": {"type": "boolean"},
                 "fire_state_label":   {"type": "keyword"},
                 "zscore_Temperature": {"type": "float"},
                 "zscore_CO":          {"type": "float"},
@@ -217,7 +218,7 @@ def process_batch(batch_df, batch_id: int) -> None:
       5. Scrivi su MongoDB processed_readings (batch layer — dati arricchiti)
       6. Scrivi su ES sensors_live_index (serving layer — time-series)
       7. Upsert su ES node_status_index (stato corrente per nodo)
-      8. Scrivi fire_events su MongoDB (solo righe Fire >= 1)
+      8. Scrivi fire_events su MongoDB (solo transizioni no-fire → fire)
       9. Rolling stats su MongoDB agg_per_nodo
     """
     if batch_df.isEmpty():
@@ -295,9 +296,21 @@ def process_batch(batch_df, batch_id: int) -> None:
         row_dict["anomaly_sensors"] = ", ".join(anomaly_flags)
 
         # ── 4. Arricchimento fire ─────────────────────────────────────────────
-        fire_val = row_dict.get("Fire")
-        row_dict["is_fire"]          = bool(fire_val is not None and fire_val >= 1)
-        row_dict["fire_state_label"] = _fire_state_label(fire_val)
+        fire_val  = row_dict.get("Fire")
+        last_fire = stats.get("last_fire_value")   # None = nodo mai visto prima
+        # Transizione: nodo passa da no-fire (None o 0) a fire (>=1)
+        is_transition = bool(
+            fire_val is not None
+            and fire_val >= 1
+            and (last_fire is None or last_fire == 0)
+        )
+        row_dict["is_fire"]            = bool(fire_val is not None and fire_val >= 1)
+        row_dict["is_fire_transition"] = is_transition
+        row_dict["fire_value_prev"]    = int(last_fire) if last_fire is not None else 0
+        row_dict["fire_state_label"]   = _fire_state_label(fire_val)
+        # Aggiorna last_fire_value per le righe successive dello stesso nodo nel batch
+        if fire_val is not None:
+            stats["last_fire_value"] = fire_val
 
         enriched_rows.append(row_dict)
 
@@ -407,22 +420,24 @@ def process_batch(batch_df, batch_id: int) -> None:
         if errors:
             print(f"[WARN] node_status bulk: {len(errors)} failed in batch {batch_id}")
 
-    # ── 8. Fire events su MongoDB (solo righe Fire >= 1) ─────────────────────
-    fire_rows = [r for r in enriched_rows if r.get("Fire") is not None and r["Fire"] >= 1]
+    # ── 8. Fire events su MongoDB (solo transizioni no-fire → fire) ──────────
+    fire_rows = [r for r in enriched_rows if r.get("is_fire_transition")]
     if fire_rows:
         fire_docs = []
         for rd in fire_rows:
             fire_docs.append({
-                "node_id":      rd["node_id"],
-                "fire_value":   int(rd["Fire"]),
-                "ingest_ts":    datetime.fromisoformat(rd["ingest_ts"].replace("Z", "+00:00")),
-                "temperature_c": rd.get("Temperature (C)"),
-                "co":            rd.get("CO"),
-                "smoke_ppm":     rd.get("Smoke (ppm)"),
+                "node_id":        rd["node_id"],
+                "reading_index":  rd.get("reading_index"),
+                "fire_value":     int(rd["Fire"]),
+                "fire_value_prev": rd.get("fire_value_prev", 0),
+                "ingest_ts":      datetime.fromisoformat(rd["ingest_ts"].replace("Z", "+00:00")),
+                "temperature_c":  rd.get("Temperature (C)"),
+                "co":             rd.get("CO"),
+                "smoke_ppm":      rd.get("Smoke (ppm)"),
             })
         db.fire_events.bulk_write([
             ReplaceOne(
-                {"node_id": d["node_id"], "ingest_ts": d["ingest_ts"]},
+                {"node_id": d["node_id"], "reading_index": d.get("reading_index")},
                 d, upsert=True
             )
             for d in fire_docs

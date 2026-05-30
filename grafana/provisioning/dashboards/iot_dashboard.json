@@ -47,25 +47,53 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           },
           "mappings": [
             {
               "type": "value",
               "options": {
-                "true":  { "text": "FIRE",    "color": "red",   "index": 0 },
-                "false": { "text": "NO FIRE", "color": "green", "index": 1 }
+                "true": {
+                  "text": "FIRE",
+                  "color": "red",
+                  "index": 0
+                },
+                "false": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 1
+                }
               }
             },
             {
               "type": "special",
-              "options": { "match": "null",  "result": { "text": "NO FIRE", "color": "green", "index": 2 } }
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 2
+                }
+              }
             },
             {
               "type": "special",
-              "options": { "match": "empty", "result": { "text": "NO FIRE", "color": "green", "index": 3 } }
+              "options": {
+                "match": "empty",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 3
+                }
+              }
             }
           ],
           "unit": "short",
@@ -75,7 +103,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "/^is_fire$/",
           "values": false
         },
@@ -94,7 +124,13 @@
           },
           "query": "_id:nodo_1",
           "metrics": [
-            { "id": "1", "settings": { "size": "1" }, "type": "raw_data" }
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
           ],
           "bucketAggs": [],
           "timeField": "last_update_ts"
@@ -123,25 +159,53 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           },
           "mappings": [
             {
               "type": "value",
               "options": {
-                "true":  { "text": "FIRE",    "color": "red",   "index": 0 },
-                "false": { "text": "NO FIRE", "color": "green", "index": 1 }
+                "true": {
+                  "text": "FIRE",
+                  "color": "red",
+                  "index": 0
+                },
+                "false": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 1
+                }
               }
             },
             {
               "type": "special",
-              "options": { "match": "null",  "result": { "text": "NO FIRE", "color": "green", "index": 2 } }
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 2
+                }
+              }
             },
             {
               "type": "special",
-              "options": { "match": "empty", "result": { "text": "NO FIRE", "color": "green", "index": 3 } }
+              "options": {
+                "match": "empty",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 3
+                }
+              }
             }
           ],
           "unit": "short",
@@ -151,7 +215,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "/^is_fire$/",
           "values": false
         },
@@ -170,7 +236,13 @@
           },
           "query": "_id:nodo_2",
           "metrics": [
-            { "id": "1", "settings": { "size": "1" }, "type": "raw_data" }
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
           ],
           "bucketAggs": [],
           "timeField": "last_update_ts"
@@ -199,25 +271,53 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           },
           "mappings": [
             {
               "type": "value",
               "options": {
-                "true":  { "text": "FIRE",    "color": "red",   "index": 0 },
-                "false": { "text": "NO FIRE", "color": "green", "index": 1 }
+                "true": {
+                  "text": "FIRE",
+                  "color": "red",
+                  "index": 0
+                },
+                "false": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 1
+                }
               }
             },
             {
               "type": "special",
-              "options": { "match": "null",  "result": { "text": "NO FIRE", "color": "green", "index": 2 } }
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 2
+                }
+              }
             },
             {
               "type": "special",
-              "options": { "match": "empty", "result": { "text": "NO FIRE", "color": "green", "index": 3 } }
+              "options": {
+                "match": "empty",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 3
+                }
+              }
             }
           ],
           "unit": "short",
@@ -227,7 +327,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "/^is_fire$/",
           "values": false
         },
@@ -246,7 +348,13 @@
           },
           "query": "_id:nodo_3",
           "metrics": [
-            { "id": "1", "settings": { "size": "1" }, "type": "raw_data" }
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
           ],
           "bucketAggs": [],
           "timeField": "last_update_ts"
@@ -275,25 +383,53 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           },
           "mappings": [
             {
               "type": "value",
               "options": {
-                "true":  { "text": "FIRE",    "color": "red",   "index": 0 },
-                "false": { "text": "NO FIRE", "color": "green", "index": 1 }
+                "true": {
+                  "text": "FIRE",
+                  "color": "red",
+                  "index": 0
+                },
+                "false": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 1
+                }
               }
             },
             {
               "type": "special",
-              "options": { "match": "null",  "result": { "text": "NO FIRE", "color": "green", "index": 2 } }
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 2
+                }
+              }
             },
             {
               "type": "special",
-              "options": { "match": "empty", "result": { "text": "NO FIRE", "color": "green", "index": 3 } }
+              "options": {
+                "match": "empty",
+                "result": {
+                  "text": "NO FIRE",
+                  "color": "green",
+                  "index": 3
+                }
+              }
             }
           ],
           "unit": "short",
@@ -303,7 +439,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "/^is_fire$/",
           "values": false
         },
@@ -322,7 +460,13 @@
           },
           "query": "_id:nodo_4",
           "metrics": [
-            { "id": "1", "settings": { "size": "1" }, "type": "raw_data" }
+            {
+              "id": "1",
+              "settings": {
+                "size": "1"
+              },
+              "type": "raw_data"
+            }
           ],
           "bucketAggs": [],
           "timeField": "last_update_ts"
@@ -332,7 +476,7 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Temperature (\u00b0C) per Nodo",
+      "title": "Temperature (°C) per Nodo",
       "datasource": {
         "type": "elasticsearch",
         "uid": "${DS_ES}"
@@ -735,8 +879,23 @@
           },
           "query": "node_id:nodo_1 AND is_fire:true",
           "timeField": "ingest_ts",
-          "metrics": [{"id": "1", "type": "count"}],
-          "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "ingest_ts", "settings": {"interval": "auto", "min_doc_count": "0"}}],
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "ingest_ts",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
           "alias": "nodo_1"
         },
         {
@@ -747,8 +906,23 @@
           },
           "query": "node_id:nodo_2 AND is_fire:true",
           "timeField": "ingest_ts",
-          "metrics": [{"id": "1", "type": "count"}],
-          "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "ingest_ts", "settings": {"interval": "auto", "min_doc_count": "0"}}],
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "ingest_ts",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
           "alias": "nodo_2"
         },
         {
@@ -759,8 +933,23 @@
           },
           "query": "node_id:nodo_3 AND is_fire:true",
           "timeField": "ingest_ts",
-          "metrics": [{"id": "1", "type": "count"}],
-          "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "ingest_ts", "settings": {"interval": "auto", "min_doc_count": "0"}}],
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "ingest_ts",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
           "alias": "nodo_3"
         },
         {
@@ -771,8 +960,23 @@
           },
           "query": "node_id:nodo_4 AND is_fire:true",
           "timeField": "ingest_ts",
-          "metrics": [{"id": "1", "type": "count"}],
-          "bucketAggs": [{"id": "2", "type": "date_histogram", "field": "ingest_ts", "settings": {"interval": "auto", "min_doc_count": "0"}}],
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "ingest_ts",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
           "alias": "nodo_4"
         }
       ]
