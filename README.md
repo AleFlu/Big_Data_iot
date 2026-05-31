@@ -127,6 +127,26 @@ docker compose up -d
 
 ---
 
+## Makefile shortcuts
+
+A `Makefile` wraps the most common commands. Run `make` (or `make help`) for the full list:
+
+```bash
+make up              # start the whole stack
+make logs            # follow the Spark streaming job logs
+make health          # active Spark workers + Elasticsearch doc counts
+make check           # document counts across Elasticsearch + MongoDB
+make rebuild-spark   # rebuild & recreate all 5 Spark images together
+make reset           # full reset (drops volumes, rebuilds, restarts)
+```
+
+> `make rebuild-spark` rebuilds and recreates the driver, master and all three
+> workers in one shot — they share a single Dockerfile, so they must always be
+> rebuilt together (rebuilding only the driver leaves the workers on a stale
+> image and tasks fail at runtime).
+
+---
+
 ## What this project does
 
 A fully containerised streaming pipeline that ingests environmental sensor data from 4 independent IoT nodes, processes it in real-time with anomaly detection and fire-transition logic, and visualises everything on live Grafana dashboards refreshed every 5 seconds.
