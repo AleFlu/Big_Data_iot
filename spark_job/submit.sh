@@ -12,6 +12,6 @@ exec /opt/spark/bin/spark-submit \
   --conf spark.driver.host=spark-job \
   --conf spark.driver.bindAddress=0.0.0.0 \
   --conf spark.ui.enabled=false \
-  --conf spark.sql.shuffle.partitions=4 \
+  --conf spark.sql.shuffle.partitions=16 \
   --conf spark.streaming.stopGracefullyOnShutdown=true \
   /spark/app/spark_stream_job.py

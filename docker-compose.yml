@@ -3,7 +3,9 @@ networks:
     driver: bridge
 
 volumes:
-  kafka_data:
+  kafka1_data:
+  kafka2_data:
+  kafka3_data:
   es_data:
   mongo_data:
   grafana_data:
@@ -11,7 +13,10 @@ volumes:
 
 services:
 
-  # ── KAFKA (KRaft, no ZooKeeper) ─────────────────────────────────────────────
+  # ── KAFKA CLUSTER (KRaft, 3 broker, no ZooKeeper) ───────────────────────────
+  # Quorum controller a 3 votanti (1@kafka,2@kafka2,3@kafka3) condiviso da tutti.
+  # Ogni broker è anche controller. replication-factor=3 + min.insync.replicas=2
+  # danno vera fault tolerance: il cluster sopravvive alla perdita di 1 broker.
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     platform: linux/arm64
@@ -21,7 +26,7 @@ services:
     ports:
       - "9092:9092"
     volumes:
-      - kafka_data:/var/lib/kafka/data
+      - kafka1_data:/var/lib/kafka/data
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -31,14 +36,16 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka2:9093,3@kafka3:9093
       KAFKA_LOG_DIRS: /var/lib/kafka/data
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 24
-      KAFKA_HEAP_OPTS: "-Xmx384m -Xms256m"
+      KAFKA_HEAP_OPTS: "-Xmx320m -Xms256m"
       KAFKA_JMX_PORT: 9101
       KAFKA_JMX_HOSTNAME: kafka
     mem_limit: 512m
@@ -47,9 +54,80 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 40s
+
+  kafka2:
+    image: confluentinc/cp-kafka:7.6.1
+    platform: linux/arm64
+    container_name: kafka2
+    hostname: kafka2
+    networks: [iot_net]
+    volumes:
+      - kafka2_data:/var/lib/kafka/data
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: ${CLUSTER_ID}
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka2:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka2:9093,3@kafka3:9093
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: "-Xmx320m -Xms256m"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  kafka3:
+    image: confluentinc/cp-kafka:7.6.1
+    platform: linux/arm64
+    container_name: kafka3
+    hostname: kafka3
+    networks: [iot_net]
+    volumes:
+      - kafka3_data:/var/lib/kafka/data
+    environment:
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: ${CLUSTER_ID}
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka3:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka2:9093,3@kafka3:9093
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: "-Xmx320m -Xms256m"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
 
   # ── KAFKA TOPIC INIT (ephemero) ─────────────────────────────────────────────
+  # replication-factor=3: ogni partizione ha 3 repliche distribuite sui 3 broker.
   kafka-init:
     image: confluentinc/cp-kafka:7.6.1
     platform: linux/arm64
@@ -58,7 +136,11 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: ["bash", "-c", "/usr/bin/kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic iot.sensor.data --partitions 4 --replication-factor 1 --config retention.ms=86400000 && echo 'Topic iot.sensor.data created with 4 partitions'"]
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    entrypoint: ["bash", "-c", "/usr/bin/kafka-topics --bootstrap-server kafka:29092,kafka2:29092,kafka3:29092 --create --if-not-exists --topic iot.sensor.data --partitions 4 --replication-factor 3 --config min.insync.replicas=2 --config retention.ms=86400000 && echo 'Topic iot.sensor.data created with 4 partitions, replication-factor 3'"]
     restart: "no"
 
   # ── MONGODB 7.0 ─────────────────────────────────────────────────────────────
@@ -153,7 +235,7 @@ services:
     environment:
       NODE_ID: nodo_1
       CSV_PATH: /data/acquisizioni/Nodo_1/prima_acquisizione/nodo1_csv.csv
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092,kafka2:29092,kafka3:29092
       KAFKA_TOPIC: iot.sensor.data
       KAFKA_PARTITION: "0"
       PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
@@ -176,7 +258,7 @@ services:
     environment:
       NODE_ID: nodo_2
       CSV_PATH: /data/acquisizioni/Nodo_2/prima_acquisizione/nodo2.csv
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092,kafka2:29092,kafka3:29092
       KAFKA_TOPIC: iot.sensor.data
       KAFKA_PARTITION: "1"
       PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
@@ -199,7 +281,7 @@ services:
     environment:
       NODE_ID: nodo_3
       CSV_PATH: /data/acquisizioni/Nodo_3/prima_acq/nodo3_csv.csv
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092,kafka2:29092,kafka3:29092
       KAFKA_TOPIC: iot.sensor.data
       KAFKA_PARTITION: "2"
       PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
@@ -222,7 +304,7 @@ services:
     environment:
       NODE_ID: nodo_4
       CSV_PATH: /data/acquisizioni/Nodo_4/nodo4_csv.csv
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092,kafka2:29092,kafka3:29092
       KAFKA_TOPIC: iot.sensor.data
       KAFKA_PARTITION: "3"
       PRODUCER_DELAY_MS: ${PRODUCER_DELAY_MS:-500}
@@ -330,7 +412,7 @@ services:
     user: "root"
     environment:
       SPARK_ROLE: driver
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092,kafka2:29092,kafka3:29092
       KAFKA_TOPIC: iot.sensor.data
       MONGO_URI: mongodb://mongodb:27017/sensor_data
       ES_HOST: elasticsearch
@@ -351,6 +433,10 @@ services:
       spark-worker-3:
         condition: service_started
       kafka:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
@@ -391,7 +477,7 @@ services:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: iot-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092,kafka2:29092,kafka3:29092
       KAFKA_CLUSTERS_0_METRICS_PORT: 9101
     depends_on:
       kafka:

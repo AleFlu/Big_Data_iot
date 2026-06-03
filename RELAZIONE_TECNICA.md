@@ -53,13 +53,17 @@ Tutti i servizi girano in container Docker sulla stessa rete `iot_net` (bridge).
 
 ## 2. Tecnologie scelte e motivazioni
 
-### 2.1 Kafka (Confluent CP 7.6.1, KRaft mode)
+### 2.1 Kafka (Confluent CP 7.6.1, KRaft mode) — cluster a 3 broker
 
-Kafka è il bus centrale del sistema: disaccoppia i producer (CSV) dal consumer (Spark) garantendo che nessun messaggio venga perso anche se Spark si riavvia. La scelta di **KRaft** (Kafka senza ZooKeeper) elimina un intero servizio extra, risparmiando ~256 MB di RAM sul laptop.
+Kafka è il bus centrale del sistema: disaccoppia i producer (CSV) dal consumer (Spark) garantendo che nessun messaggio venga perso anche se Spark si riavvia. La scelta di **KRaft** (Kafka senza ZooKeeper) elimina un intero servizio extra: in modalità KRaft sono gli stessi broker a formare il **quorum di controller**, senza un servizio di coordinamento separato.
 
-Il topic `iot.sensor.data` ha **4 partizioni**, una per nodo sensore. Ogni producer scrive su una **partizione esplicita** (env var `KAFKA_PARTITION`): questo garantisce la distribuzione uniforme 1 nodo = 1 partizione indipendentemente dall'hash della chiave. Senza assegnazione esplicita, l'algoritmo murmur2 di kafka-python avrebbe mappato nodo_1 e nodo_4 sulla stessa partizione lasciando la partizione 2 sempre vuota.
+**Cluster a 3 broker.** Kafka è deployato come **cluster di 3 broker** (`kafka`, `kafka2`, `kafka3`), ciascuno con ruolo `broker,controller`. I tre nodi condividono lo stesso `CLUSTER_ID` e lo stesso `KAFKA_CONTROLLER_QUORUM_VOTERS` (`1@kafka:9093,2@kafka2:9093,3@kafka3:9093`): formano un quorum di controller a 3 votanti che tollera la perdita di 1 nodo. Questa è la differenza fondamentale rispetto a un singolo broker: si ottiene **partitioning *e* replication** (le due dimensioni della distribuzione di Kafka), non solo il partizionamento.
 
-La chiave del messaggio è comunque `node_id`: mantiene l'ordinamento per nodo all'interno della partizione assegnata.
+**Replicazione e fault tolerance.** Il topic `iot.sensor.data` ha **4 partizioni** con **replication-factor 3** e **`min.insync.replicas=2`**: ogni partizione ha 3 repliche su broker distinti, e una scrittura è confermata solo quando almeno 2 repliche l'hanno persistita. Anche i topic interni (`__consumer_offsets`, transaction log) hanno RF=3. Il sistema **sopravvive alla perdita di un broker**: i leader delle partizioni che risiedevano sul broker caduto vengono rieletti automaticamente tra le repliche in-sync (ISR), e la pipeline continua a produrre e consumare senza interruzione (verificato fermando un broker a runtime: leader rieletti, ISR ridotta a 2, nessuna perdita di dati; al riavvio del broker le repliche si ri-sincronizzano e l'ISR torna a 3). Tutti i client (4 producer, Spark, Kafka UI) elencano i 3 broker come `bootstrap.servers`, così la caduta di un broker non impedisce loro di trovare gli altri.
+
+**Partizionamento semantico.** Ogni producer scrive su una **partizione esplicita** (env var `KAFKA_PARTITION`: 0→nodo_1 … 3→nodo_4) — una *semantic partition function*, non il round-robin di default. Questo garantisce la distribuzione uniforme 1 nodo = 1 partizione indipendentemente dall'hash della chiave. Senza assegnazione esplicita, l'algoritmo murmur2 di kafka-python avrebbe mappato nodo_1 e nodo_4 sulla stessa partizione lasciando una partizione vuota. La chiave del messaggio resta `node_id`, che mantiene l'ordinamento per nodo all'interno della partizione.
+
+> **Nota di dimensionamento.** 3 broker su un singolo laptop danno ridondanza (fault tolerance), non throughput aggiuntivo: a ~8 msg/s il collo di bottiglia non è mai il broker. In un deployment reale i 3 broker girerebbero su host separati. La replicazione del *dato applicativo* è completa; l'unico punto non ridondato è l'accesso *dall'host esterno* (porta 9092), esposto solo dal broker 1 — i client interni alla rete Docker usano invece tutti e 3 i broker.
 
 ### 2.2 Spark Structured Streaming 3.5.3 — Standalone Cluster
 
@@ -391,8 +395,9 @@ Il sistema simula un deployment distribuito su 4 macchine fisiche usando Docker 
 Due componenti sono stati distribuiti:
 1. **CSV Producer ×4** — 4 container indipendenti, ciascuno simula una macchina sensore
 2. **Spark Standalone Cluster** — 1 master + 3 worker + 1 driver, ognuno in un container separato
+3. **Kafka Cluster** — 3 broker KRaft (`kafka`, `kafka2`, `kafka3`), quorum di controller a 3 votanti, replication-factor 3 (vedi sezione 2.1)
 
-I restanti componenti (Kafka, Elasticsearch, MongoDB, Grafana) rimangono single-node: la complessità di distribuirli non è giustificata dal volume di dati (≈8 msg/sec totali).
+I restanti componenti (Elasticsearch, MongoDB, Grafana) rimangono single-node: la complessità di distribuirli non è giustificata dal volume di dati (≈8 msg/sec totali). Kafka è invece clusterizzato perché la fault tolerance del bus di messaggi (replicazione delle partizioni) è il concetto Big Data centrale che il progetto vuole dimostrare, e il costo in RAM di 2 broker aggiuntivi (~1 GB) è sostenibile.
 
 ### 8.2 CSV Producer ×4
 
@@ -444,12 +449,18 @@ ES richiede che `mem_limit` e `ES_JAVA_OPTS` siano allineati: senza `mem_limit` 
 
 ### 8.5 Checkpoint e idempotenza
 
-Il checkpoint Spark è su volume Docker `spark_checkpoints:/spark/checkpoints`. Senza volume, un riavvio del container azzera il checkpoint e Spark ri-processa tutta la coda Kafka storica. Tutte le scritture sono idempotenti:
+Il checkpoint Spark è su volume Docker `spark_checkpoints:/spark/checkpoints`. Senza volume, un riavvio del container azzera il checkpoint e Spark ri-processa tutta la coda Kafka storica. Le scritture **per-record** sono idempotenti (un re-processing dello stesso micro-batch sovrascrive, non duplica):
 - MongoDB `raw_readings`: `operationType=replace` + `idFieldList=node_id,reading_index`
 - MongoDB `processed_readings`: `ReplaceOne(upsert=True)` con chiave `(node_id, reading_index)`
 - MongoDB `fire_events`: `ReplaceOne(upsert=True)` con chiave `(node_id, reading_index)`
 - ES `sensors_live_index`: `_id = node_id_reading_index` (upsert via bulk con `_id` esplicito)
 - ES `node_status_index`: upsert con `_id = node_id`
+
+**Limite noto — aggregati cumulativi non idempotenti.** Due strutture *stateful* fanno eccezione e **non** sono idempotenti su re-processing:
+- `agg_per_nodo`: usa `$inc` su `total_processed` e `running_sum_*`. Se Spark ri-processa un micro-batch già applicato (recovery da failure a checkpoint disallineato), conteggi e somme cumulative vengono incrementati due volte, gonfiando la media cumulativa. I `$min`/`$max` restano corretti perché idempotenti per natura.
+- `node_stats` (stato Welford): `count/mean/m2` accumulano sullo stato già persistito; un re-processing conterebbe due volte le stesse letture, distorcendo leggermente media e varianza da quel punto.
+
+È una proprietà intrinseca degli **aggregati online**: renderli idempotenti richiederebbe di tracciare gli offset/`reading_index` già incorporati nello stato. L'impatto è limitato ai soli scenari di failure-recovery e ricade su **metriche di monitoraggio/storiche** (medie cumulative, range), **non** sulla detection in tempo reale (z-score e flag fire del singolo record restano corretti, essendo calcolati sul record e scritti in modo idempotente). In esercizio normale, senza fallimenti del driver, anche questi aggregati sono esatti.
 
 ### 8.6 Ordine di avvio
 
@@ -517,7 +528,7 @@ Il punto chiave è il **passo 3**: non c'è alcun `collect()`. La logica di arri
 
 Il meccanismo si appoggia sull'allineamento tra partizionamento Kafka e partizionamento Spark:
 
-1. **`repartition(F.col("node_id"))`** — prima di `foreachPartition`, il batch filtrato viene ripartizionato per `node_id`. Poiché il partizionamento Kafka già garantisce *1 nodo = 1 partizione*, ogni partizione Spark contiene le letture di **un solo nodo**.
+1. **`repartition(F.col("node_id"))`** — prima di `foreachPartition`, il batch filtrato viene ripartizionato per `node_id` (hash partitioning su `spark.sql.shuffle.partitions`, impostato a 16). L'obiettivo è che ogni partizione Spark contenga le letture di **un solo nodo**. Nota: con un hash su poche chiavi, due nodi potrebbero teoricamente cadere nella stessa partizione (collisione); per questo `process_partition` **non assume** un nodo per partizione ma raggruppa comunque le righe per `node_id` al suo interno (vedi punto 5), restando corretto in ogni caso. Con 16 bucket per 4 nodi le collisioni sono improbabili e il parallelismo effettivo è pieno.
 2. **`foreachPartition(process_partition)`** — Spark esegue `process_partition` su ogni executor, in parallelo. Nodo_1 viene elaborato su un worker, nodo_2 su un altro, e così via.
 3. **Ordinamento intra-partizione** — Welford è seriale (lo z-score della lettura *N* dipende dalle letture *1…N-1*). Spark non garantisce l'ordine dopo il `filter`/`repartition`, quindi `process_partition` **riordina le righe per `reading_index`** prima di applicare l'algoritmo. Questo preserva la correttezza statistica.
 4. **Connessioni per executor** — Mongo ed ES vengono aperti *dentro* la funzione di partizione (singleton per processo executor, non riutilizzabili dal driver).

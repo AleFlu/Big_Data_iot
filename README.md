@@ -157,9 +157,9 @@ Built as a university project for the Big Data course (Master's degree), the sys
 
 ```
 [machine-1]  csv-producer-1 (nodo_1) ──┐
-[machine-2]  csv-producer-2 (nodo_2) ──┤──► Kafka  ──► Spark Standalone Cluster
-[machine-3]  csv-producer-3 (nodo_3) ──┤   4 parts        │
-[machine-4]  csv-producer-4 (nodo_4) ──┘                  ▼
+[machine-2]  csv-producer-2 (nodo_2) ──┤──► Kafka cluster ──► Spark Standalone Cluster
+[machine-3]  csv-producer-3 (nodo_3) ──┤   3 brokers·4 parts      │
+[machine-4]  csv-producer-4 (nodo_4) ──┘   replication-factor 3   ▼
                                                ┌───────────┴────────────┐
                                           MongoDB                 Elasticsearch
                                         5 collections              2 indices
@@ -172,7 +172,7 @@ Built as a university project for the Big Data course (Master's degree), the sys
 
 | Component | Technology | Version |
 |---|---|---|
-| Message broker | Confluent Kafka (KRaft, no ZooKeeper) | 7.6.1 |
+| Message broker | Confluent Kafka cluster — 3 brokers, KRaft, no ZooKeeper | 7.6.1 |
 | Stream processing | Apache Spark Structured Streaming | 3.5.3 |
 | Time-series store | Elasticsearch | 7.17.28 |
 | Document store | MongoDB | 7.0 |
@@ -188,7 +188,7 @@ Each sensor node continuously streams CSV rows to a dedicated Kafka partition. S
 CSV Producer ×4
     │  JSON messages (key = node_id, explicit partition 0–3)
     ▼
-Kafka  iot.sensor.data  (4 partitions · 24h retention)
+Kafka cluster (3 brokers)  iot.sensor.data  (4 partitions · replication-factor 3 · min.insync.replicas 2 · 24h retention)
     │  micro-batch every 5s · max 200 offsets/partition
     ▼
 Spark Structured Streaming — foreachBatch
@@ -285,13 +285,13 @@ The driver runs in **client mode**: `foreachBatch` logic executes in the `spark-
 | Spark workers × 3 | 640 MB × 3 |
 | Spark driver | 768 MB |
 | Spark master | 512 MB |
-| Kafka | 512 MB |
+| Kafka brokers × 3 | 512 MB × 3 |
 | MongoDB | 512 MB |
 | CSV producers × 4 | 128 MB × 4 |
 | Grafana + tools | ~640 MB |
-| **Total** | **~6.4 GB** |
+| **Total** | **~7.4 GB** |
 
-Set at least **8 GB** in Docker Desktop → Settings → Resources → Memory.
+Set at least **8 GB** in Docker Desktop → Settings → Resources → Memory (the 3-broker Kafka cluster needs the headroom). Actual runtime usage is lower (~5 GB) since `mem_limit` values are ceilings.
 
 ---
 
@@ -304,6 +304,26 @@ Set at least **8 GB** in Docker Desktop → Settings → Resources → Memory.
 | `Topic iot.sensor.data not present` | `kafka-init` ran before Kafka was healthy | Re-run `docker compose up kafka-init` |
 | Two nodes on the same Kafka partition | `KAFKA_PARTITION` not set on a producer | Each producer pins an explicit partition (0–3) in `docker-compose.yml`; a missing value logs a `[WARN]` and falls back to key hashing |
 | Stale data after long downtime | Kafka retention is 24 h; older offsets are gone | `failOnDataLoss=false` skips missing offsets silently — for a clean restart use `docker compose down -v` |
+
+---
+
+## Demo: Kafka cluster fault tolerance
+
+The topic uses `replication-factor 3` + `min.insync.replicas 2`, so the cluster survives losing one broker. To see it live:
+
+```bash
+# inspect replica placement (Replicas / Isr per partition)
+docker exec kafka kafka-topics --bootstrap-server kafka:29092 --describe --topic iot.sensor.data
+
+# kill one broker — leaders are re-elected, the pipeline keeps running
+docker compose stop kafka3
+docker exec kafka kafka-topics --bootstrap-server kafka:29092 --describe --topic iot.sensor.data   # Isr drops to 2
+
+# bring it back — replicas re-sync, Isr returns to 3
+docker compose start kafka3
+```
+
+Elasticsearch document counts keep increasing throughout — no data is lost while a broker is down.
 
 ---
 
