@@ -1,3 +1,5 @@
+name: bigdata_iot
+
 networks:
   iot_net:
     driver: bridge
@@ -331,7 +333,9 @@ services:
       SPARK_ROLE: master
     volumes:
       - spark_checkpoints:/spark/checkpoints
-    mem_limit: 512m
+    # Il master coordina soltanto (non esegue task): l'uso reale è ~200 MB, 384m
+    # basta con margine. Ridotto da 512m per alleggerire il picco su 8 GB.
+    mem_limit: 384m
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8082 | grep -q 'Spark Master'"]
@@ -446,6 +450,50 @@ services:
         condition: service_healthy
     mem_limit: 768m
     restart: on-failure:3
+
+  # ── SPARK BATCH JOB (batch layer storico — Lambda) ───────────────────────────
+  # Job batch SEPARATO dallo streaming: rilegge tutta raw_readings, calcola
+  # percentili/baseline/trend/validazione/correlazioni per nodo e scrive lo
+  # snapshot su MongoDB node_baseline (+ mirror ES per Grafana).
+  # Sotto profile "batch": NON parte con `docker compose up -d`. Gira ON-DEMAND
+  # con `make batch-now` (un run e termina). Scelta dettata dalla RAM: su una
+  # macchina da 8 GB un batch in loop terrebbe un executor sempre attivo e, con
+  # lo streaming già a pieno, spingerebbe lo stack in OOM. On-demand mantiene il
+  # picco basso: il 3° core resta libero e viene usato solo quando lanci il batch.
+  spark-batch:
+    build:
+      context: ./spark_job
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: spark-batch
+    # hostname DEVE combaciare con spark.driver.host=spark-batch in submit_batch.sh,
+    # altrimenti gli executor sul cluster non raggiungono il driver (deploy client).
+    hostname: spark-batch
+    networks: [iot_net]
+    user: "root"
+    profiles: ["batch"]
+    environment:
+      SPARK_ROLE: batch
+      MONGO_URI: mongodb://mongodb:27017/sensor_data
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
+      ES_BASELINE_INDEX: node_baseline_index
+      BASELINE_COLLECTION: node_baseline
+      SPARK_DRIVER_MEMORY: 512m
+      SPARK_EXECUTOR_MEMORY: 512m
+      # BATCH_LOOP=false: un solo run ed esce (on-demand, default per stabilità RAM).
+      # `make batch-now` forza comunque false; il loop resta disponibile (true) solo
+      # se in futuro si gira su una macchina con più RAM.
+      BATCH_LOOP: "false"
+      BATCH_INTERVAL_SECONDS: "600"
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    mem_limit: 768m
 
   # ── MONGO EXPRESS ───────────────────────────────────────────────────────────
   mongo-express:

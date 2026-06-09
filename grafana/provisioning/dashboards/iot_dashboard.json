@@ -21,6 +21,18 @@
       "tooltip": "Apri dashboard dettaglio per singolo nodo",
       "type": "link",
       "url": "/d/iot-node-detail/iot-node-detail"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Mappa Incendi",
+      "tooltip": "Apri la mappa geografica dei nodi",
+      "type": "link",
+      "url": "/d/iot-fire-map/mappa-incendi"
     }
   ],
   "liveNow": true,
@@ -527,7 +539,7 @@
       },
       "targets": [
         {
-          "alias": "{{2}}",
+          "alias": "{{node_id}}",
           "bucketAggs": [
             {
               "field": "node_id",
@@ -535,7 +547,7 @@
               "settings": {
                 "min_doc_count": "1",
                 "order": "desc",
-                "orderBy": "_term",
+                "orderBy": "_key",
                 "size": "4"
               },
               "type": "terms"
@@ -618,7 +630,7 @@
       },
       "targets": [
         {
-          "alias": "{{2}}",
+          "alias": "{{node_id}}",
           "bucketAggs": [
             {
               "field": "node_id",
@@ -626,7 +638,7 @@
               "settings": {
                 "min_doc_count": "1",
                 "order": "desc",
-                "orderBy": "_term",
+                "orderBy": "_key",
                 "size": "4"
               },
               "type": "terms"
@@ -717,7 +729,7 @@
       },
       "targets": [
         {
-          "alias": "{{2}}",
+          "alias": "{{node_id}}",
           "bucketAggs": [
             {
               "field": "node_id",
@@ -725,7 +737,7 @@
               "settings": {
                 "min_doc_count": "1",
                 "order": "desc",
-                "orderBy": "_term",
+                "orderBy": "_key",
                 "size": "4"
               },
               "type": "terms"
@@ -1091,7 +1103,7 @@
       },
       "targets": [
         {
-          "alias": "{{2}}",
+          "alias": "{{node_id}}",
           "bucketAggs": [
             {
               "field": "node_id",
@@ -1099,7 +1111,7 @@
               "settings": {
                 "min_doc_count": "1",
                 "order": "desc",
-                "orderBy": "_term",
+                "orderBy": "_key",
                 "size": "4"
               },
               "type": "terms"
@@ -1125,6 +1137,99 @@
           "query": "",
           "refId": "A",
           "timeField": "ingest_ts"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Temperatura media per finestra (1m) per Nodo",
+      "description": "Aggregazione streaming a finestra (tumbling 1 min) dall'indice window_stats: media della temperatura per nodo per finestra.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-window-stats"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 35
+              },
+              {
+                "color": "red",
+                "value": 45
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "alias": "{{node_id}}",
+          "bucketAggs": [
+            {
+              "field": "node_id",
+              "id": "2",
+              "settings": {
+                "min_doc_count": "1",
+                "order": "desc",
+                "orderBy": "_key",
+                "size": "4"
+              },
+              "type": "terms"
+            },
+            {
+              "field": "window_start",
+              "id": "1",
+              "settings": {
+                "interval": "1m",
+                "min_doc_count": "1",
+                "trimEdges": "0"
+              },
+              "type": "date_histogram"
+            }
+          ],
+          "metrics": [
+            {
+              "field": "avg_temp",
+              "id": "1",
+              "type": "avg"
+            }
+          ],
+          "query": "",
+          "refId": "A",
+          "timeField": "window_start"
         }
       ]
     }

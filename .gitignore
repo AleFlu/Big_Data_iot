@@ -9,6 +9,10 @@ acquisizioni/
 *.pdf
 *.docx
 
+# Backup temporanei delle relazioni (es. Bozza_*.backup-AAAAMMGG-HHMMSS.docx)
+*.backup-*.docx
+*.bak
+
 # macOS
 .DS_Store
 **/.DS_Store

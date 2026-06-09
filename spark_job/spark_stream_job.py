@@ -24,6 +24,10 @@ ES_HOST          = os.environ.get("ES_HOST", "elasticsearch")
 ES_PORT          = int(os.environ.get("ES_PORT", "9200"))
 ES_INDEX         = os.environ.get("ES_INDEX", "sensors_live_index")
 ES_STATUS_INDEX   = "node_status_index"
+# Index dedicato alle aggregazioni a finestra (query streaming separata e additiva).
+# Costante e non sovrascrivibile da env: il pannello Grafana e il mapping ES lo
+# referenziano per nome fisso, quindi non deve poter "driftare" via ambiente.
+ES_WINDOW_INDEX   = "window_stats"
 ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL", "")  # vuoto = alerting disabilitato
 
 # Soglie di pulizia identiche al notebook (Cell 19)
@@ -51,6 +55,16 @@ ANOMALY_SENSORS = [
     ("Smoke (ppm)",     "Smoke"),
     ("Gas (Ohm)",       "Gas"),
 ]
+
+# Coordinate geografiche FITTIZIE dei nodi, assegnate a mano nella zona del
+# massiccio dei Sette Fratelli (a est di Cagliari). Servono solo a collocare i
+# nodi sulla mappa Grafana (pannello Geomap): i sensori reali non hanno GPS.
+NODE_COORDS = {
+    "nodo_1": (39.290, 9.400),
+    "nodo_2": (39.275, 9.420),
+    "nodo_3": (39.300, 9.435),
+    "nodo_4": (39.265, 9.395),
+}
 
 # Rinomina campi per ES (snake_case, compatibili con Kibana KQL / Lens).
 # I nomi originali restano invariati in MongoDB raw_readings e nei messaggi Kafka.
@@ -201,10 +215,48 @@ def ensure_node_status_index(es_client: Elasticsearch) -> None:
                 "running_max_gas":       {"type": "float"},
                 "total_processed":       {"type": "long"},
                 "last_update_ts":        {"type": "date", "format": "strict_date_optional_time"},
+                "lat":                   {"type": "float"},
+                "lon":                   {"type": "float"},
+                "map_status":            {"type": "integer"},
             }
         },
     }
     _safe_create_index(es_client, ES_STATUS_INDEX, mapping)
+
+
+def ensure_window_stats_index(es_client: Elasticsearch) -> None:
+    """
+    Crea window_stats — un documento per (finestra temporale, nodo).
+
+    Lo alimenta la query streaming a finestra (tumbling 1 min, watermark 2 min):
+    una riga per ogni coppia (window_start, node_id) con avg/max/min dei sensori.
+    Mapping esplicito come per gli altri indici: senza di esso ES indovinerebbe i
+    tipi dal primo documento (es. float→long se il primo avg è intero), rompendo
+    poi le aggregazioni Grafana. window_start/window_end sono date strict così
+    Grafana può usarli come timeField nella date histogram.
+    """
+    if es_client.indices.exists(index=ES_WINDOW_INDEX):
+        return
+    mapping = {
+        "settings": {"index": {"number_of_replicas": 0, "refresh_interval": "5s"}},
+        "mappings": {
+            "properties": {
+                "node_id":       {"type": "keyword"},
+                "window_start":  {"type": "date", "format": "strict_date_optional_time"},
+                "window_end":    {"type": "date", "format": "strict_date_optional_time"},
+                "avg_temp":      {"type": "float"},
+                "max_temp":      {"type": "float"},
+                "avg_co":        {"type": "float"},
+                "max_co":        {"type": "float"},
+                "avg_smoke":     {"type": "float"},
+                "max_smoke":     {"type": "float"},
+                "avg_gas":       {"type": "float"},
+                "min_gas":       {"type": "float"},
+                "reading_count": {"type": "long"},
+            }
+        },
+    }
+    _safe_create_index(es_client, ES_WINDOW_INDEX, mapping)
 
 
 def _fire_state_label(fire_val) -> str:
@@ -419,6 +471,12 @@ def _enrich_and_persist_node(node_id: str, rows: list, db, es) -> dict:
          "running_min_gas": 1, "running_max_gas": 1, "total_processed": 1, "_id": 0}
     ) or {}
     fire_val = rd.get("Fire")
+    # Coordinate fittizie + livello di stato (0 normale / 1 anomalia / 2 incendio)
+    # per il pannello mappa Grafana (Geomap). map_status riusa i flag già calcolati:
+    # per nodo_4 (Fire null) is_fire è False, quindi riflette l'anomalia.
+    _lat, _lon = NODE_COORDS.get(node_id, (None, None))
+    _map_status = (2 if (fire_val is not None and fire_val >= 1)
+                   else 1 if rd.get("is_anomaly") else 0)
     status_doc = {
         "node_id":            node_id,
         "last_ingest_ts":     rd.get("ingest_ts"),
@@ -448,6 +506,9 @@ def _enrich_and_persist_node(node_id: str, rows: list, db, es) -> dict:
         "total_processed":    cum.get("total_processed"),
         "last_update_ts":     datetime.now(timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "lat":                _lat,
+        "lon":                _lon,
+        "map_status":         _map_status,
     }
     # helpers.bulk (non es.index): API stabile su elasticsearch-py 7.17 e coerente
     # con le altre scritture ES. _id = node_id → un solo documento per nodo (upsert).
@@ -626,6 +687,87 @@ def process_batch(batch_df, batch_id: int) -> None:
     db_client.close()
 
 
+# ── Query a finestra (streaming aggregation) ──────────────────────────────────
+# Pipeline SEPARATA e ADDITIVA: legge lo stesso topic Kafka in modo indipendente
+# (proprio reader, proprio checkpoint) e scrive solo su window_stats. Non tocca
+# in alcun modo la query principale né i suoi sink. Tutto ciò che segue serve
+# esclusivamente a questa seconda query.
+
+
+# Client ES della query a finestra, vivo SOLO sul driver (process_window_batch è
+# un foreachBatch, gira sul driver). DEVE stare in una variabile DEDICATA e NON
+# in _CONN: _CONN è referenziato da get_es_client()/get_mongo_db(), quindi da
+# process_partition, quindi finisce nel grafo di cattura di cloudpickle quando la
+# pipeline PRINCIPALE serializza process_partition verso i worker. Se il client ES
+# (che contiene un socket) fosse in _CONN, quella serializzazione fallirebbe con
+# "cannot pickle 'socket' object" — ed è esattamente l'interazione che va evitata
+# tra le due query. Tenendolo qui, fuori da _CONN, process_partition non lo vede.
+_DRIVER_ES_WINDOW: Elasticsearch | None = None
+
+
+def get_window_es_client() -> Elasticsearch:
+    """Client ES per la query a finestra — driver-only, lazy, fuori da _CONN."""
+    global _DRIVER_ES_WINDOW
+    if _DRIVER_ES_WINDOW is None:
+        es = Elasticsearch(f"http://{ES_HOST}:{ES_PORT}")
+        ensure_window_stats_index(es)
+        _DRIVER_ES_WINDOW = es
+    return _DRIVER_ES_WINDOW
+
+
+def process_window_batch(batch_df, batch_id: int) -> None:
+    """
+    Callback foreachBatch della query a finestra: scrive su window_stats con upsert.
+
+    outputMode("update") riemette una finestra ad ogni micro-batch finché il
+    watermark non la chiude: lo stesso (window_start, node_id) può quindi arrivare
+    più volte con conteggi/aggregati aggiornati. Usando _id = f"{node_id}_{window_start}"
+    ogni emissione SOVRASCRIVE il documento della finestra (upsert idempotente),
+    così l'indice riflette sempre l'ultimo valore consolidato della finestra e non
+    accumula duplicati.
+    """
+    if batch_df.isEmpty():
+        return
+
+    es = get_window_es_client()
+    actions = []
+    for row in batch_df.collect():
+        rd = row.asDict()
+        # Le colonne window_start/window_end sono Timestamp Spark: le serializziamo
+        # in ISO8601 UTC con suffisso "Z" per allinearle al format strict_date_*
+        # del mapping (e a come il producer scrive ingest_ts).
+        ws = rd["window_start"]
+        we = rd["window_end"]
+        ws_iso = ws.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z" if ws is not None else None
+        we_iso = we.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z" if we is not None else None
+        doc = {
+            "node_id":       rd.get("node_id"),
+            "window_start":  ws_iso,
+            "window_end":    we_iso,
+            "avg_temp":      rd.get("avg_temp"),
+            "max_temp":      rd.get("max_temp"),
+            "avg_co":        rd.get("avg_co"),
+            "max_co":        rd.get("max_co"),
+            "avg_smoke":     rd.get("avg_smoke"),
+            "max_smoke":     rd.get("max_smoke"),
+            "avg_gas":       rd.get("avg_gas"),
+            "min_gas":       rd.get("min_gas"),
+            "reading_count": rd.get("reading_count"),
+        }
+        actions.append({
+            "_index": ES_WINDOW_INDEX,
+            "_id":    f"{doc['node_id']}_{ws_iso}",
+            "_source": doc,
+        })
+
+    if actions:
+        _, errors = helpers.bulk(es, actions, chunk_size=500,
+                                 raise_on_error=False, raise_on_exception=True)
+        if errors:
+            print(f"[WARN] window_stats bulk (batch {batch_id}): {len(errors)} falliti")
+        print(f"Window batch {batch_id}: {len(actions)} finestre → ES:{ES_WINDOW_INDEX}")
+
+
 def main():
     spark = (SparkSession.builder
              .appName("IoT-Sensor-Streaming")
@@ -654,7 +796,70 @@ def main():
              .start())
 
     print(f"Streaming query avviata. Topic: {KAFKA_TOPIC} → ES:{ES_INDEX} + {ES_STATUS_INDEX} + MongoDB")
-    query.awaitTermination()
+
+    # ── Seconda query: aggregazione a finestra (additiva, indipendente) ───────
+    # Riusa lo stesso df_parsed (stesso reader Kafka logico) ma con il PROPRIO
+    # checkpoint /spark/checkpoints/iot_window: Spark materializza un secondo
+    # stream con offset tracciati separatamente, quindi le due query consumano il
+    # topic in modo indipendente e non si influenzano a vicenda.
+    #
+    # Event-time: ingest_ts è una STRINGA ISO8601 nello schema → la convertiamo a
+    # timestamp con F.to_timestamp() per poter applicare watermark e F.window().
+    # Le righe con ingest_ts nullo verrebbero escluse dall'aggregazione a finestra
+    # (event_ts null), il che è corretto: senza event-time non collocabili in una
+    # finestra.
+    df_window_src = df_parsed.withColumn("event_ts", F.to_timestamp("ingest_ts"))
+
+    # Tumbling window di 1 minuto (solo durata, nessuno slide → finestre disgiunte)
+    # con watermark di 2 minuti: dati più vecchi di (max_event_ts - 2 min) sono
+    # scartati e le finestre già chiuse non vengono più aggiornate, limitando lo
+    # stato mantenuto in memoria. outputMode("update") riemette solo le finestre
+    # cambiate nel micro-batch (vedi process_window_batch per l'upsert idempotente).
+    df_windowed = (df_window_src
+                   .withWatermark("event_ts", "2 minutes")
+                   .groupBy(
+                       F.window("event_ts", "1 minute"),
+                       F.col("node_id"),
+                   )
+                   .agg(
+                       F.round(F.avg(F.col("Temperature (C)")), 2).alias("avg_temp"),
+                       F.round(F.max(F.col("Temperature (C)")), 2).alias("max_temp"),
+                       F.round(F.avg(F.col("CO")),              2).alias("avg_co"),
+                       F.round(F.max(F.col("CO")),              2).alias("max_co"),
+                       F.round(F.avg(F.col("Smoke (ppm)")),     4).alias("avg_smoke"),
+                       F.round(F.max(F.col("Smoke (ppm)")),     4).alias("max_smoke"),
+                       F.round(F.avg(F.col("Gas (Ohm)")),       2).alias("avg_gas"),
+                       F.round(F.min(F.col("Gas (Ohm)")),       2).alias("min_gas"),
+                       F.count(F.lit(1)).alias("reading_count"),
+                   )
+                   # "esplode" la struct window in due colonne scalari, più comode
+                   # da serializzare nel sink (vedi process_window_batch).
+                   .select(
+                       F.col("window.start").alias("window_start"),
+                       F.col("window.end").alias("window_end"),
+                       F.col("node_id"),
+                       "avg_temp", "max_temp",
+                       "avg_co", "max_co",
+                       "avg_smoke", "max_smoke",
+                       "avg_gas", "min_gas",
+                       "reading_count",
+                   ))
+
+    window_query = (df_windowed.writeStream
+                    .foreachBatch(process_window_batch)
+                    .option("checkpointLocation", "/spark/checkpoints/iot_window")
+                    .trigger(processingTime="5 seconds")
+                    .outputMode("update")
+                    .start())
+
+    print(f"Window query avviata. Topic: {KAFKA_TOPIC} → ES:{ES_WINDOW_INDEX} "
+          f"(tumbling 1m, watermark 2m, outputMode update)")
+
+    # awaitAnyTermination invece di query.awaitTermination(): con due query attive
+    # vogliamo che il job termini (e si riavvii) se UNA QUALSIASI delle due cade,
+    # invece di restare appeso sulla sola query principale ignorando un crash della
+    # window query. Entrambe sono già state .start()-ate prima di questa chiamata.
+    spark.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":

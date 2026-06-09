@@ -44,9 +44,16 @@ RUN mkdir -p /opt/spark/jars && \
 # Create app dir with spark ownership
 RUN mkdir -p /spark/app && chown spark:spark /spark/app
 
-COPY spark_stream_job.py submit.sh entrypoint.sh /spark/app/
-RUN chmod +x /spark/app/submit.sh /spark/app/entrypoint.sh \
-    && chown spark:spark /spark/app/spark_stream_job.py /spark/app/submit.sh /spark/app/entrypoint.sh
+# Streaming (speed layer) + Batch (batch layer Lambda). I container Spark
+# condividono questa immagine, quindi tutti gli script vivono qui: il ruolo
+# effettivo è scelto a runtime da entrypoint.sh via SPARK_ROLE.
+COPY spark_stream_job.py batch_analytics.py \
+     submit.sh submit_batch.sh batch_loop.sh entrypoint.sh /spark/app/
+RUN chmod +x /spark/app/submit.sh /spark/app/submit_batch.sh \
+             /spark/app/batch_loop.sh /spark/app/entrypoint.sh \
+    && chown spark:spark /spark/app/spark_stream_job.py /spark/app/batch_analytics.py \
+                         /spark/app/submit.sh /spark/app/submit_batch.sh \
+                         /spark/app/batch_loop.sh /spark/app/entrypoint.sh
 
 USER spark
 WORKDIR /spark/app

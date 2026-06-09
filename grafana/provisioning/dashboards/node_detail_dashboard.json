@@ -1,28 +1,6 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_ES",
-      "label": "Elasticsearch",
-      "description": "",
-      "type": "datasource",
-      "pluginId": "elasticsearch",
-      "pluginName": "Elasticsearch"
-    }
-  ],
-  "__requires": [
-    {
-      "type": "datasource",
-      "id": "elasticsearch",
-      "name": "Elasticsearch",
-      "version": "1.0.0"
-    },
-    {
-      "type": "grafana",
-      "id": "grafana",
-      "name": "Grafana",
-      "version": "10.4.2"
-    }
-  ],
+  "__inputs": [],
+  "__requires": [],
   "annotations": {
     "list": []
   },
@@ -2312,7 +2290,10 @@
         "sort": 0
       },
       {
-        "current": {},
+        "current": {
+          "text": "Elasticsearch",
+          "value": "Elasticsearch"
+        },
         "hide": 2,
         "includeAll": false,
         "multi": false,

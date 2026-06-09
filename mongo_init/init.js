@@ -44,4 +44,12 @@ createIfMissing("fire_events");
 db.fire_events.createIndex({ node_id: 1, ingest_ts: -1 });
 db.fire_events.createIndex({ ingest_ts: 1 }, { expireAfterSeconds: 2592000 });
 
+// ── node_baseline: snapshot del BATCH LAYER storico (Lambda) ──────────────────
+// 1 documento per nodo, riscritto in overwrite a ogni run del job batch
+// (batch_analytics.py). Contiene percentili/baseline/trend orari calcolati
+// sull'INTERA storia di raw_readings. Indice unico su node_id: c'è esattamente
+// un documento per nodo. Niente TTL: è uno snapshot, non una serie storica.
+createIfMissing("node_baseline");
+db.node_baseline.createIndex({ node_id: 1 }, { unique: true });
+
 print("MongoDB: collezioni e indici inizializzati su sensor_data.");
