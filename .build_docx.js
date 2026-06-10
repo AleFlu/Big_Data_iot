@@ -3,7 +3,7 @@ const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   AlignmentType, LevelFormat, HeadingLevel, BorderStyle, WidthType,
   ShadingType, TableOfContents, PageNumber, PageBreak, Footer, Header,
-  VerticalAlign,
+  VerticalAlign, ImageRun,
 } = require("docx");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -190,19 +190,15 @@ const body = [
 
   // 4
   h1("4. Architettura della pipeline"),
-  ...mono(
-`[macchina 1] producer nodo_1 ─┐
-[macchina 2] producer nodo_2 ─┤   Kafka cluster            Spark Standalone
-[macchina 3] producer nodo_3 ─┼─► (3 broker, 4 part.,  ──► (1 master + 3 worker)
-[macchina 4] producer nodo_4 ─┘    repl-factor 3)             │
-                                                              ▼
-                                   MongoDB  ◄────────────────────────────► Elasticsearch
-                          (raw / processed / stats /          (time-series, stato live,
-                           fire / batch)                       finestre, baseline)
-                                              │
-                                              ▼
-                                          Grafana`
-  ),
+  new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { before: 120, after: 120 },
+    children: [new ImageRun({
+      data: fs.readFileSync("architettura.png"),
+      transformation: { width: 440, height: 416 },
+    })],
+  }),
+  pItalic("Figura 1 — Architettura della pipeline: dai 4 nodi sensore fino alle dashboard Grafana."),
   blank(),
   p("Flusso ad alto livello:"),
   numItem([R("4 producer Python", { bold: true }), R(" leggono i CSV dei rispettivi nodi e pubblicano le letture come messaggi JSON su Kafka. Ogni nodo scrive su una partizione dedicata (0–3): così l'ordine di lettura per nodo è garantito.")]),
@@ -250,8 +246,42 @@ const body = [
   p("Le dashboard Grafana sono provisioning-as-code (definite da file, ricreate automaticamente):"),
   bulletRuns([R("IoT Sensor Dashboard", { bold: true }), R(" — vista globale sui 4 nodi: card di stato FIRE / NO FIRE, serie storiche di temperatura/CO/fumo, conteggio anomalie, attività incendi.")]),
   bulletRuns([R("IoT Node Detail", { bold: true }), R(" — drill-down su singolo nodo: tutti i sensori sullo stesso asse temporale, andamento z-score, timeline anomalie, statistiche cumulative.")]),
-  bulletRuns([R("Mappa Incendi", { bold: true }), R(" — mappa geografica dei 4 nodi (pannello Geomap su basemap OpenStreetMap). I marker cambiano colore in tempo reale in base allo stato del nodo (verde = normale, arancione = anomalia, rosso = incendio), aggiornati ogni 5 s. Cliccando un nodo si apre un riepilogo sintetico dei suoi dati e un link al dettaglio del singolo nodo. Nota metodologica: i sensori reali non hanno GPS, quindi le coordinate dei nodi sono fittizie, assegnate a mano in una zona boschiva a est di Cagliari (massiccio dei Sette Fratelli); il basemap, invece, è reale. La mappa riusa l'indice di stato node_status_index (1 documento per nodo) arricchito con lat/lon e un campo di livello-stato.")]),
+  bulletRuns([R("Mappa Incendi", { bold: true }), R(" — mappa geografica live con marker colorati per stato (verde/arancione/rosso), aggiornamento ogni 5 s, drill-down al singolo nodo (dettagli in §6.1).")]),
   bulletRuns([R("Historical Dashboard", { bold: true }), R(" (bozza) — output del batch layer: percentili, correlazioni, metriche di validazione.")]),
+
+  h2("6.1 Mappa geografica live degli incendi (Geomap)"),
+  pRuns([
+    R("Una quarta dashboard — "),
+    R('"Mappa Incendi"', { bold: true }),
+    R(" — mostra i 4 nodi sensore su una mappa geografica reale (basemap "),
+    R("OpenStreetMap", { bold: true }),
+    R(", pannello nativo "),
+    R("Geomap", { bold: true }),
+    R(" di Grafana 10.4), con aggiornamento automatico ogni 5 s."),
+  ]),
+  pRuns([R("Come funziona.  ", { bold: true }), R("Il datasource è l'indice node_status_index di Elasticsearch: un singolo documento per nodo, upsertato a ogni micro-batch. Per supportare la mappa, il job Spark arricchisce quel documento con tre campi aggiuntivi:")]),
+  makeTable([2200, 1600, 5226], ["Campo", "Tipo", "Descrizione"], [
+    ["lat / lon", "float", "Coordinate geografiche del nodo"],
+    ["map_status", "integer", "Livello di stato: 0 = normale · 1 = anomalia · 2 = incendio"],
+  ]),
+  blank(),
+  pRuns([
+    R("Il pannello Geomap posiziona i marker usando lat/lon e colora ciascun marker in base a map_status con soglie cromatiche: "),
+    R("verde → 0", { bold: true, color: "217346" }),
+    R(", "),
+    R("arancione → 1", { bold: true, color: "C55A11" }),
+    R(", "),
+    R("rosso → 2", { bold: true, color: "C00000" }),
+    R(". Cliccando un marker appare un tooltip con i valori chiave del nodo (temperatura, CO, fumo, stato); cliccando il node_id si apre la dashboard di dettaglio del singolo nodo."),
+  ]),
+  pRuns([
+    R("Nota metodologica.  ", { bold: true }),
+    R("I sensori fisici non hanno GPS; le coordinate sono quindi "),
+    R("fittizie", { bold: true }),
+    R(", assegnate a mano in una zona boschiva a est di Cagliari (massiccio dei "),
+    R("Sette Fratelli", { bold: true }),
+    R(", lat ≈ 39.27–39.30, lon ≈ 9.39–9.44). Questo è dichiarato esplicitamente nella description della dashboard e in questa relazione. Il basemap OSM è reale; la mappa è funzionale a livello dimostrativo e richiede connessione internet per i tile."),
+  ]),
 
   // 7
   h1("7. Aspetti “Big Data” enfatizzati"),

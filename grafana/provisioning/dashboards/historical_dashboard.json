@@ -225,7 +225,7 @@
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [ "lastNotNull" ],
-          "fields": "/^total_readings$/",
+          "fields": "/^Sum$/",
           "values": true
         },
         "showUnfilled": true
@@ -277,7 +277,7 @@
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [ "lastNotNull" ],
-          "fields": "/^p99_temp$/",
+          "fields": "/^Max$/",
           "values": true
         },
         "showUnfilled": true
