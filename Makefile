@@ -77,7 +77,7 @@ open: ## Apre Grafana nel browser (macOS)
 check: check-es check-mongo ## Esegue tutte le verifiche dati (ES + MongoDB)
 
 check-es: ## Conteggio documenti negli indici Elasticsearch
-	@for idx in sensors_live_index node_status_index; do \
+	@for idx in sensors_live_index node_status_index window_stats node_baseline_index sensor_correlation_index; do \
 		curl -s "$(ES_URL)/$$idx/_count" 2>/dev/null \
 			| python3 -c "import sys,json; print(f'  $$idx:', json.load(sys.stdin).get('count'))" \
 			2>/dev/null || echo "  $$idx: (non raggiungibile)"; \
